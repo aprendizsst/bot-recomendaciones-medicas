@@ -2,14 +2,14 @@ import streamlit as st
 import pdfplumber
 from docx import Document
 from docx.shared import Inches, Pt
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 import sqlite3
 import hashlib
 import os
 import datetime
 import re
 import requests
-import io  # <-- Aquí está el import que nos hacía falta
+import io
+import zipfile
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Generador de Cartas SST - JER S.A.", page_icon="🩺", layout="wide")
@@ -116,10 +116,12 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "username" not in st.session_state:
     st.session_state.username = ""
-if "word_bytes" not in st.session_state:
-    st.session_state.word_bytes = None
-if "doc_listo" not in st.session_state:
-    st.session_state.doc_listo = False
+if "documentos" not in st.session_state:
+    st.session_state.documentos = {}
+if "textos_raw" not in st.session_state:
+    st.session_state.textos_raw = {}
+if "zip_bytes" not in st.session_state:
+    st.session_state.zip_bytes = None
 
 # --- PANTALLAS DE ACCESO ---
 if not st.session_state.logged_in:
@@ -181,7 +183,7 @@ if not st.session_state.logged_in:
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
-# --- FUNCIONES DE EXTRACCIÓN ---
+# --- FUNCIONES DE EXTRACCIÓN MEJORADAS ---
 def limpiar_campo(texto):
     if not texto: return ""
     exclusiones = r'\b(Teléfono|Telefono|Tel|C\.C|CC|Documento|Identificac|Cedula|Cédula|Edad|Sexo|Cargo|Fecha|Estado|Empresa|Ciudad)\b'
@@ -213,21 +215,18 @@ def extraer_seccion(texto, palabras_inicio, palabras_fin):
 
 def analizar_pdf_inteligente(texto):
     datos = {
-        "nombre": "", "cargo": "", "tipo_examen": "",
+        "nombre": "", "cargo": "", "tipo_examen": "PERIODICO",
         "examenes": "", "recomendaciones": "", "vigilancia": "",
-        "observaciones": "", "remisiones": ""
+        "observaciones": "", "remisiones": "", "consecutivo": ""
     }
     if not texto: return datos
 
-    # 1. Nombre
     m_nom = re.search(r'(?:Nombre|Paciente|Colaborador|Trabajador):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_nom: datos["nombre"] = limpiar_campo(m_nom.group(1))
 
-    # 2. Cargo
     m_car = re.search(r'(?:Cargo|Ocupación|Ocupacion|Puesto):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_car: datos["cargo"] = limpiar_campo(m_car.group(1))
 
-    # 3. Tipo de Examen
     m_tipo = re.search(r'(?:Tipo de Examen|Concepto|Evaluación|Evaluacion|Motivo|Clase de Examen):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_tipo: 
         datos["tipo_examen"] = limpiar_campo(m_tipo.group(1))
@@ -237,30 +236,25 @@ def analizar_pdf_inteligente(texto):
                 datos["tipo_examen"] = palabra
                 break
 
-    # 4. Exámenes Realizados
     examenes_comunes = ["Visiometría", "Visiometria", "Audiometría", "Audiometria", "Espiometría", "Espirometria", "Frotis", "Cuadro Hemático", "Optometría", "Laboratorio Clínico", "Glicemia", "Colesterol"]
     detectados = [ex for ex in examenes_comunes if re.search(r'\b' + re.escape(ex) + r'\b', texto, re.IGNORECASE)]
-    datos["examenes"] = ", ".join(detectados) if detectados else ""
+    datos["examenes"] = ", ".join(detectados) if detectados else "Examen Clínico Ocupacional"
 
-    # 5. Recomendaciones Médicas
     datos["recomendaciones"] = extraer_seccion(texto, 
         ["RECOMENDACIONES MEDICAS", "RECOMENDACIONES:", "INDICACIONES MEDICAS"],
         ["OBSERVACIONES", "REMISIONES", "SISTEMA DE VIGILANCIA", "PVE", "VIGILANCIA", "FIRMA", "ATENTAMENTE"]
     )
 
-    # 6. Vigilancia Epidemiológica (PVE)
     datos["vigilancia"] = extraer_seccion(texto,
         ["SISTEMA DE VIGILANCIA", "VIGILANCIA EPIDEMIOLOGICA", "PVE", "SVE", "VIGILANCIA:"],
         ["RECOMENDACIONES", "OBSERVACIONES", "REMISIONES", "FIRMA", "ATENTAMENTE"]
     )
 
-    # 7. Observaciones
     datos["observaciones"] = extraer_seccion(texto,
         ["OBSERVACIONES:", "OBSERVACION:", "OBSERVACIONES"],
         ["RECOMENDACIONES", "REMISIONES", "VIGILANCIA", "FIRMA", "ATENTAMENTE"]
     )
 
-    # 8. Remisiones
     datos["remisiones"] = extraer_seccion(texto,
         ["REMISIONES:", "REMISION:", "REMISIONES", "REMITIDO A:"],
         ["RECOMENDACIONES", "OBSERVACIONES", "VIGILANCIA", "FIRMA", "ATENTAMENTE"]
@@ -280,250 +274,247 @@ def incrementar_consecutivo_local():
     guardar_config("ultimo_consecutivo_local", str(next_num))
     return f"SST-2026-{next_num}"
 
-# --- BARRA LATERAL (CONFIGURACIÓN) ---
+# --- REMPLAZO EN PÁRRAFOS ---
+def replace_in_paragraph(paragraph, key, value):
+    if key not in paragraph.text:
+        return
+    replaced_in_runs = False
+    for run in paragraph.runs:
+        if key in run.text:
+            run.text = run.text.replace(key, value)
+            replaced_in_runs = True
+    if not replaced_in_runs:
+        paragraph.text = paragraph.text.replace(key, value)
+
+# --- CONFIGURACIÓN DE PLANTILLA WORD ---
+def cargar_plantilla_base(archivo_cargado):
+    if archivo_cargado:
+        return Document(archivo_cargado)
+    elif os.path.exists("FORMATO RECOMENDACIONES MEDICAS BOT.docx"):
+        return Document("FORMATO RECOMENDACIONES MEDICAS BOT.docx")
+    return None
+
+# --- BARRA LATERAL ---
 st.sidebar.markdown(f"👤 **Usuario Activo:** {st.session_state.username}")
 if st.sidebar.button("Cerrar Sesión"):
     st.session_state.logged_in = False
     st.session_state.username = ""
-    st.session_state.doc_listo = False
+    st.session_state.documentos = {}
+    st.session_state.textos_raw = {}
+    st.session_state.zip_bytes = None
     st.rerun()
 
 st.sidebar.markdown("---")
-
-# Guardar URL de Google Sheets
 st.sidebar.subheader("🔗 Conexión Google Sheets")
 g_url_guardada = obtener_config("google_sheets_url")
 g_url_input = st.sidebar.text_input("URL de Google Apps Script:", value=g_url_guardada, type="password")
-
 if st.sidebar.button("Guardar Conexión"):
     guardar_config("google_sheets_url", g_url_input)
     st.sidebar.success("¡URL de Google Sheets guardada!")
     st.rerun()
 
-if g_url_guardada:
-    st.sidebar.markdown("🟢 **Estado:** Enlazado con Google Sheets")
-else:
-    st.sidebar.markdown("🟡 **Estado:** Modo Local (Sin Google Sheets)")
+st.sidebar.markdown("---")
+st.sidebar.subheader("📄 Subir Plantilla Corporativa")
+template_uploaded = st.sidebar.file_uploader("Sube el formato de Word original (.docx)", type=["docx"])
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("✍️ Cargar Firma Autorizada")
 firma_file = st.sidebar.file_uploader("Sube la firma de Víctor (.png / .jpg)", type=["png", "jpg"])
 
-# --- COLUMNAS DE TRABAJO ---
+# --- DIVISION DE TRABAJO ---
 col_izq, col_der = st.columns([1, 1.2])
 
 with col_izq:
-    st.subheader("📁 1. Cargar PDF Médico")
-    pdf_subido = st.file_uploader("Arrastra el examen en PDF", type="pdf")
+    st.subheader("📁 1. Carga Masiva de PDFs")
+    pdfs_subidos = st.file_uploader("Arrastra aquí uno o varios PDFs", type="pdf", accept_multiple_files=True)
     
-    texto_raw = ""
-    datos_sugeridos = {
-        "nombre": "", "cargo": "", "tipo_examen": "",
-        "examenes": "", "recomendaciones": "", "vigilancia": "",
-        "observaciones": "", "remisiones": ""
-    }
-    
-    if pdf_subido:
-        with pdfplumber.open(pdf_subido) as pdf:
-            for page in pdf.pages:
-                texto_raw += page.extract_text() + "\n"
+    if pdfs_subidos:
+        for pdf in pdfs_subidos:
+            if pdf.name not in st.session_state.documentos:
+                with pdfplumber.open(pdf) as p_file:
+                    texto_raw = ""
+                    for page in p_file.pages:
+                        texto_raw += page.extract_text() + "\n"
+                datos = analizar_pdf_inteligente(texto_raw)
+                st.session_state.documentos[pdf.name] = datos
+                st.session_state.textos_raw[pdf.name] = texto_raw
         
-        st.info("✅ PDF leído con éxito.")
-        datos_sugeridos = analizar_pdf_inteligente(texto_raw)
+        st.success(f"🟢 ¡Se cargaron {len(st.session_state.documentos)} trabajadores con éxito!")
         
-        with st.expander("🔍 Ver texto extraído del PDF"):
-            st.text_area("Texto crudo:", value=texto_raw, height=300)
+        # Lista selectiva de los trabajadores procesados
+        lista_trabajadores = list(st.session_state.documentos.keys())
+        archivo_seleccionado = st.selectbox("📝 Selecciona un trabajador para editar:", lista_trabajadores)
+    else:
+        st.session_state.documentos = {}
+        st.session_state.textos_raw = {}
+        archivo_seleccionado = None
+
+    if archivo_seleccionado:
+        with st.expander("🔍 Ver texto crudo de este PDF"):
+            st.text_area("Texto:", value=st.session_state.textos_raw[archivo_seleccionado], height=250)
 
 with col_der:
-    st.subheader("📋 2. Formato de Envío")
-    st.write("Edita la información antes de generar tu documento final:")
+    st.subheader("📋 2. Editor del Trabajador Seleccionado")
     
-    consecutivo_actual = obtener_config("google_sheets_url")
-    if consecutivo_actual:
-        st.caption("ℹ️ El consecutivo se reservará automáticamente en tu Google Sheet al hacer clic en 'Generar Word'.")
-    else:
-        num_local = obtener_siguiente_consecutivo_local()
-        st.info(f"ℹ️ Consecutivo local de respaldo estimado: `SST-2026-{num_local}`")
-
-    col_f1, col_f2 = st.columns(2)
-    with col_f1:
-        lugar = st.text_input("Lugar de Expedición:", value="Tunja")
-    with col_f2:
-        fecha = st.date_input("Fecha de la Carta:", value=datetime.date(2026, 7, 14))
-
-    tipo_examen = st.text_input("Tipo de Examen (ASUNTO):", value=datos_sugeridos["tipo_examen"].upper(), placeholder="Ej: PERIÓDICO")
-    
-    col_p1, col_p2 = st.columns(2)
-    with col_p1:
-        nombre_persona = st.text_input("Nombre del Trabajador:", value=datos_sugeridos["nombre"])
-    with col_p2:
-        cargo_persona = st.text_input("Cargo del Trabajador:", value=datos_sugeridos["cargo"])
+    if archivo_seleccionado:
+        doc_actual = st.session_state.documentos[archivo_seleccionado]
         
-    examenes_realizados = st.text_area("Exámenes Realizados:", value=datos_sugeridos["examenes"], placeholder="Ej: Audiometría, Visiometría, Laboratorios...")
-    
-    recom_medicas = st.text_area("Recomendaciones Médicas:", value=datos_sugeridos["recomendaciones"])
-    vigilancia = st.text_area("Programa de Vigilancia Epidemiológica (PVE):", value=datos_sugeridos["vigilancia"])
-    
-    observaciones = st.text_area("Observaciones:", value=datos_sugeridos["observaciones"])
-    remisiones = st.text_area("Remisiones:", value=datos_sugeridos["remisiones"])
+        # Formulario Dinámico usando claves únicas
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            lugar = st.text_input("Lugar de Expedición:", value="Tunja", key=f"lugar_{archivo_seleccionado}")
+        with col_f2:
+            fecha = st.date_input("Fecha de la Carta:", value=datetime.date(2026, 7, 14), key=f"fecha_{archivo_seleccionado}")
 
-    # Botón para Procesar y Estructurar
-    if st.button("✨ Generar Word"):
-        with st.spinner("Reservando consecutivo y maquetando..."):
-            consecutivo_final = ""
-            g_url = obtener_config("google_sheets_url")
+        tipo_examen = st.text_input("Tipo de Examen (ASUNTO):", value=doc_actual["tipo_examen"].upper(), key=f"tipo_{archivo_seleccionado}")
+        
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            nombre_persona = st.text_input("Nombre del Trabajador:", value=doc_actual["nombre"], key=f"nombre_{archivo_seleccionado}")
+        with col_p2:
+            cargo_persona = st.text_input("Cargo del Trabajador:", value=doc_actual["cargo"], key=f"cargo_{archivo_seleccionado}")
             
-            # Intentar conexión con Google Sheets
-            if g_url:
-                try:
-                    params = {
-                        "name": nombre_persona,
-                        "cargo": cargo_persona,
-                        "examen": tipo_examen,
-                        "fecha": fecha.strftime("%Y-%m-%d")
-                    }
-                    r = requests.get(g_url, params=params, timeout=12)
-                    data = r.json()
-                    if data.get("status") == "success":
-                        consecutivo_final = data.get("consecutive")
-                        st.success(f"🟢 Consecutivo '{consecutivo_final}' registrado con éxito en Google Sheets.")
-                    else:
-                        st.warning("⚠️ Error en Google Sheets. Se usará el consecutivo local.")
+        examenes_realizados = st.text_area("Exámenes Realizados:", value=doc_actual["examenes"], key=f"ex_{archivo_seleccionado}")
+        recom_medicas = st.text_area("Recomendaciones Médicas:", value=doc_actual["recomendaciones"], key=f"recom_{archivo_seleccionado}")
+        vigilancia = st.text_area("Programa de Vigilancia Epidemiológica (PVE):", value=doc_actual["vigilancia"], key=f"vig_{archivo_seleccionado}")
+        observaciones = st.text_area("Observaciones:", value=doc_actual["observaciones"], key=f"obs_{archivo_seleccionado}")
+        remisiones = st.text_area("Remisiones:", value=doc_actual["remisiones"], key=f"rem_{archivo_seleccionado}")
+
+        # Guardar cambios en memoria en tiempo real
+        doc_actual["nombre"] = nombre_persona
+        doc_actual["cargo"] = cargo_persona
+        doc_actual["tipo_examen"] = tipo_examen
+        doc_actual["examenes"] = examenes_realizados
+        doc_actual["recomendaciones"] = recom_medicas
+        doc_actual["vigilancia"] = vigilancia
+        doc_actual["observaciones"] = observaciones
+        doc_actual["remisiones"] = remisiones
+
+        # --- CONSTRUCTOR INDIVIDUAL ---
+        def generar_word_unico(datos_trabajador):
+            # Cargar Plantilla original
+            doc_word = cargar_plantilla_base(template_uploaded)
+            if not doc_word:
+                st.error("No se encontró la plantilla Word en el sistema ni se ha subido una.")
+                return None
+            
+            # Obtener Consecutivo
+            consecutivo_final = datos_trabajador.get("consecutivo", "")
+            if not consecutivo_final:
+                g_url = obtener_config("google_sheets_url")
+                if g_url:
+                    try:
+                        params = {
+                            "name": datos_trabajador["nombre"],
+                            "cargo": datos_trabajador["cargo"],
+                            "examen": datos_trabajador["tipo_examen"],
+                            "fecha": fecha.strftime("%Y-%m-%d")
+                        }
+                        r = requests.get(g_url, params=params, timeout=12)
+                        data = r.json()
+                        if data.get("status") == "success":
+                            consecutivo_final = data.get("consecutive")
+                            datos_trabajador["consecutivo"] = consecutivo_final
+                        else:
+                            consecutivo_final = incrementar_consecutivo_local()
+                    except:
                         consecutivo_final = incrementar_consecutivo_local()
-                except Exception as e:
-                    st.warning(f"⚠️ Sin conexión a Google Sheets ({e}). Consecutivo local asignado.")
-                    consecutivo_final = incrementar_consecutivo_local()
-            else:
-                consecutivo_final = incrementar_consecutivo_local()
-
-            # --- CONSTRUCCIÓN DEL WORD ---
-            try:
-                doc = Document()
-                style = doc.styles['Normal']
-                style.font.name = 'Arial'
-                style.font.size = Pt(11)
-                
-                for section in doc.sections:
-                    section.top_margin = Inches(1)
-                    section.bottom_margin = Inches(1)
-                    section.left_margin = Inches(1)
-                    section.right_margin = Inches(1)
-
-                # 1. Consecutivo
-                p_cons = doc.add_paragraph()
-                p_cons.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                run_cons = p_cons.add_run(f"Consecutivo: {consecutivo_final}")
-                run_cons.bold = True
-                
-                doc.add_paragraph()
-                
-                # 2. Asunto
-                p_asunto = doc.add_paragraph()
-                p_asunto.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                run_asunto = p_asunto.add_run(f"ASUNTO: RECOMENDACIONES EXAMEN {tipo_examen.upper()}")
-                run_asunto.bold = True
-                
-                doc.add_paragraph()
-                
-                # 3. Lugar y Fecha
-                p_fecha = doc.add_paragraph()
-                fecha_formateada = fecha.strftime("%d de %B de %Y")
-                meses = {
-                    "January": "enero", "February": "febrero", "March": "marzo", "April": "abril",
-                    "May": "mayo", "June": "junio", "July": "julio", "August": "agosto",
-                    "September": "septiembre", "October": "octubre", "November": "noviembre", "December": "diciembre"
-                }
-                for eng, esp in meses.items():
-                    fecha_formateada = fecha_formateada.replace(eng, esp)
-                p_fecha.add_run(f"{lugar}, {fecha_formateada}")
-                
-                doc.add_paragraph()
-                
-                # 4. Destinatario
-                doc.add_paragraph("Sr(a).")
-                p_nom = doc.add_paragraph()
-                p_nom_run = p_nom.add_run(nombre_persona)
-                p_nom_run.bold = True
-                doc.add_paragraph(cargo_persona)
-                
-                doc.add_paragraph()
-                
-                # 5. Saludo y Cuerpo
-                doc.add_paragraph("Cordial saludo,")
-                p_cuerpo = doc.add_paragraph(
-                    "Según los lineamientos del programa de medicina preventiva y del trabajo de JER S.A; "
-                    "se hace entrega de las recomendaciones establecidas por el Proveedor de servicios de "
-                    "Exámenes Médico Ocupacionales (Ingreso, Periódico, egreso, cambio de cargo y post incapacidad)"
-                )
-                p_cuerpo.paragraph_format.line_spacing = 1.15
-                
-                doc.add_paragraph()
-                
-                # 6. Exámenes
-                p_ex = doc.add_paragraph()
-                p_ex_run = p_ex.add_run("EXÁMENES REALIZADOS:")
-                p_ex_run.bold = True
-                doc.add_paragraph(examenes_realizados if examenes_realizados else "Ninguno registrado.")
-                
-                doc.add_paragraph()
-                
-                # 7. Recomendaciones
-                p_recom = doc.add_paragraph()
-                p_recom_run = p_recom.add_run("Recomendaciones: ")
-                p_recom_run.bold = True
-                p_recom.add_run(recom_medicas if recom_medicas else "No registra.")
-                
-                if vigilancia:
-                    p_pve_run = p_recom.add_run("\nPrograma de vigilancia epidemiológica: ")
-                    p_pve_run.bold = True
-                    p_recom.add_run(vigilancia)
-                    
-                # 8. Observaciones
-                p_obs = doc.add_paragraph()
-                p_obs_run = p_obs.add_run("observaciones: ")
-                p_obs_run.bold = True
-                p_obs.add_run(observaciones if observaciones else "Ninguna.")
-                
-                # 9. Remisiones
-                p_rem = doc.add_paragraph()
-                p_rem_run = p_rem.add_run("remisiones: ")
-                p_rem_run.bold = True
-                p_rem.add_run(remisiones if remisiones else "Ninguna.")
-                
-                doc.add_paragraph()
-                
-                # 10. Firma
-                doc.add_paragraph("Atentamente,")
-                if firma_file:
-                    doc.add_picture(firma_file, width=Inches(2.2))
                 else:
-                    doc.add_paragraph()
-                    
-                p_firma_nombre = doc.add_paragraph()
-                p_fn_run = p_firma_nombre.add_run("VÍCTOR ALONSO MORENO CASAS")
-                p_fn_run.bold = True
-                doc.add_paragraph("Coordinador SST")
-                
-                # Guardar en memoria
-                b_io = io.BytesIO()
-                doc.save(b_io)
-                b_io.seek(0)
-                
-                # Guardamos las variables de estado
-                st.session_state.word_bytes = b_io.getvalue()
-                st.session_state.doc_listo = True
-                st.session_state.nombre_archivo = f"Recomendaciones_{nombre_persona.replace(' ', '_')}.docx"
-                
-            except Exception as e:
-                st.error(f"Error al estructurar el Word: {e}")
+                    consecutivo_final = incrementar_consecutivo_local()
+                datos_trabajador["consecutivo"] = consecutivo_final
 
-    # BOTÓN DE DESCARGA
-    if st.session_state.doc_listo and st.session_state.word_bytes:
+            # Reemplazo de fecha y formato
+            fecha_formateada = fecha.strftime("%d de %B de %Y")
+            meses = {
+                "January": "enero", "February": "febrero", "March": "marzo", "April": "abril",
+                "May": "mayo", "June": "junio", "July": "julio", "August": "agosto",
+                "September": "septiembre", "October": "octubre", "November": "noviembre", "December": "diciembre"
+            }
+            for eng, esp in meses.items():
+                fecha_formateada = fecha_formateada.replace(eng, esp)
+
+            # Diccionario de Reemplazos de Plantilla Exactos
+            replacements = {
+                "{{NUMERO DE CONSECUTIVO}}": consecutivo_final,
+                "{{TIPO DE EXAMEN}}": datos_trabajador["tipo_examen"].upper(),
+                "{{LUGAR}}": lugar,
+                "{{FECHA HOY}}": fecha_formateada,
+                "{{NOMBRE DE LA PERSONA}}": datos_trabajador["nombre"],
+                "{{CARGO DE LA PERSONA}}": datos_trabajador["cargo"],
+                "{{LISTA DE EXAMENES REALIZADOS}}": datos_trabajador["examenes"],
+                "{{LISTA DE EXAMENES REALIZADOS": datos_trabajador["examenes"],
+                "{{Recomendaciones médicas}}": datos_trabajador["recomendaciones"] if datos_trabajador["recomendaciones"] else "No registra.",
+                "{{Programa de vigilancia epidemiológica}}": datos_trabajador["vigilancia"] if datos_trabajador["vigilancia"] else "Ninguno.",
+                "{{Observaciones}}": datos_trabajador["observaciones"] if datos_trabajador["observaciones"] else "Ninguna.",
+                "{{Remisiones}}": datos_trabajador["remisiones"] if datos_trabajador["remisiones"] else "Ninguna."
+            }
+
+            # Procesar el cuerpo de las tablas en la plantilla
+            for table in doc_word.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        # Reemplazar placeholders de texto
+                        for p in cell.paragraphs:
+                            for key, val in replacements.items():
+                                replace_in_paragraph(p, key, val)
+                        
+                        # Buscar dinámicamente el nombre de Víctor para estampar la firma arriba de él
+                        idx_victor = -1
+                        for idx, p in enumerate(cell.paragraphs):
+                            if "VÍCTOR ALONSO MORENO CASAS" in p.text:
+                                idx_victor = idx
+                                break
+                        
+                        if idx_victor != -1 and firma_file:
+                            # Se estampa la firma 2 párrafos arriba de su nombre
+                            p_firma = cell.paragraphs[idx_victor - 2]
+                            p_firma.text = ""
+                            p_firma.add_run().add_picture(firma_file, width=Inches(2.2))
+
+            b_io = io.BytesIO()
+            doc_word.save(b_io)
+            b_io.seek(0)
+            return b_io.getvalue()
+
+        # --- INTERFAZ DE GENERACIÓN ---
         st.markdown("---")
-        st.success("🎉 ¡Maquetación finalizada con éxito!")
-        st.download_button(
-            label="📥 Descargar Documento Word (.docx)",
-            data=st.session_state.word_bytes,
-            file_name=st.session_state.nombre_archivo,
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
+        col_gen1, col_gen2 = st.columns(2)
+        
+        with col_gen1:
+            if st.button("✨ Generar Word de este Trabajador"):
+                with st.spinner("Procesando plantilla..."):
+                    bytes_word = generar_word_unico(doc_actual)
+                    if bytes_word:
+                        st.success(f"🟢 Consecutivo '{doc_actual['consecutivo']}' reservado con éxito.")
+                        st.download_button(
+                            label=f"📥 Descargar Word: {doc_actual['nombre']}",
+                            data=bytes_word,
+                            file_name=f"Recomendaciones_{doc_actual['nombre'].replace(' ', '_')}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        )
+                        
+        with col_gen2:
+            if len(st.session_state.documentos) > 1:
+                if st.button("📦 Generar TODOS en un ZIP"):
+                    with st.spinner("Conectando con Google Sheets y empaquetando en un ZIP..."):
+                        zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                            for filename, datos_trab in st.session_state.documentos.items():
+                                bytes_word = generar_word_unico(datos_trab)
+                                if bytes_word:
+                                    archivo_word_nombre = f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.docx"
+                                    zf.writestr(archivo_word_nombre, bytes_word)
+                                    
+                        zip_buffer.seek(0)
+                        st.session_state.zip_bytes = zip_buffer.getvalue()
+                        st.success(f"🎉 ¡ZIP creado con éxito conteniendo {len(st.session_state.documentos)} informes!")
+                        
+                if st.session_state.zip_bytes:
+                    st.download_button(
+                        label="📥 Descargar archivo ZIP de Informes",
+                        data=st.session_state.zip_bytes,
+                        file_name=f"Recomendaciones_SST_JER_SA_{fecha.strftime('%Y%m%d')}.zip",
+                        mime="application/zip"
+                    )
+    else:
+        st.info("👋 Sube uno o varios archivos PDF a la izquierda para empezar a maquetar.")
