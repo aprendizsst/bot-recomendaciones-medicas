@@ -208,7 +208,7 @@ def obtener_config(clave):
 
 init_db()
 
-# --- MANEJO DE SESIÓN DE LOGIN ---
+# --- MANEJO DE SESIÓN DE LOGIN Y ESTADOS DE ARCHIVOS ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "username" not in st.session_state:
@@ -221,6 +221,73 @@ if "export_bytes" not in st.session_state:
     st.session_state.export_bytes = None
 if "zip_bytes" not in st.session_state:
     st.session_state.zip_bytes = None
+if "processed_doc" not in st.session_state:  # Almacena el archivo del colaborador actual
+    st.session_state.processed_doc = None
+if "prev_colaborador" not in st.session_state:  # Detecta cambio de pestaña para resetear descargas
+    st.session_state.prev_colaborador = None
+if "document_count" not in st.session_state:  # Detecta cambios en la cantidad de PDFs para el ZIP
+    st.session_state.document_count = 0
+
+# --- PANTALLAS DE ACCESO ---
+if not st.session_state.logged_in:
+    st.markdown("<div class='login-box'>", unsafe_allow_html=True)
+    st.markdown("<h2>🔑 Acceso Seguro</h2>", unsafe_allow_html=True)
+    st.markdown("<p>Portal Interno de Medicina Preventiva - JER S.A.</p>", unsafe_allow_html=True)
+    
+    if not tiene_usuarios():
+        st.warning("🆕 Bienvenido. Configura tu cuenta inicial de Administrador.")
+        reg_nombre = st.text_input("Nombre Completo")
+        reg_user = st.text_input("Nombre de Usuario (Login)")
+        reg_pwd = st.text_input("Contraseña", type="password")
+        if st.button("Crear Administrador"):
+            if reg_nombre and reg_user and reg_pwd:
+                if registrar_usuario(reg_user, reg_pwd, reg_nombre):
+                    st.success("¡Administrador creado con éxito!")
+                    st.rerun()
+            else:
+                st.warning("Completa todos los campos.")
+    else:
+        opcion_acceso = st.radio("Elige una acción:", ["Iniciar Sesión", "Crear Nueva Cuenta", "Actualizar Contraseña"], horizontal=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        if opcion_acceso == "Iniciar Sesión":
+            log_user = st.text_input("Usuario")
+            log_pwd = st.text_input("Contraseña", type="password")
+            if st.button("Ingresar al Sistema"):
+                nombre_usuario = verificar_usuario(log_user, log_pwd)
+                if nombre_usuario:
+                    st.session_state.logged_in = True
+                    st.session_state.username = nombre_usuario
+                    st.rerun()
+                else:
+                    st.error("❌ Credenciales incorrectas.")
+                    
+        elif opcion_acceso == "Crear Nueva Cuenta":
+            reg_nombre = st.text_input("Nombre Completo")
+            reg_user = st.text_input("Nombre de Usuario")
+            reg_pwd = st.text_input("Contraseña", type="password")
+            if st.button("Registrar Cuenta"):
+                if reg_nombre and reg_user and reg_pwd:
+                    if registrar_usuario(reg_user, reg_pwd, reg_nombre):
+                        st.success("🎉 Cuenta creada. Cambia a 'Iniciar Sesión'.")
+                    else:
+                        st.error("❌ El usuario ya existe.")
+                else:
+                    st.warning("Completa todos los campos.")
+                    
+        elif opcion_acceso == "Actualizar Contraseña":
+            upd_user = st.text_input("Usuario")
+            upd_old_pwd = st.text_input("Contraseña Actual", type="password")
+            upd_new_pwd = st.text_input("Nueva Contraseña", type="password")
+            if st.button("Cambiar Contraseña"):
+                if upd_user and upd_old_pwd and upd_new_pwd:
+                    if actualizar_contrasena(upd_user, upd_old_pwd, upd_new_pwd):
+                        st.success("✅ Contraseña actualizada con éxito.")
+                    else:
+                        st.error("❌ Error en los datos proporcionados.")
+                        
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
 
 # --- REVISOR Y CORRECTOR DE ORTOGRAFÍA SST ---
 def corregir_ortografia_sst(texto):
@@ -442,7 +509,7 @@ def analizar_pdf_inteligente(texto):
                 seccion.append(l_limpia)
         return "\n".join([s for s in seccion if s]).strip()
 
-    # CORRECCIÓN: Stop words añadidas para que "Ingresar al programa..." no se filtre en Observaciones
+    # Detener observaciones ante la grilla de Vigilancia Epidemiológica
     datos["observaciones"] = a_caso_oracion(extraer_seccion_limpia(
         texto, 
         ["OBSERVACIONES:"], 
@@ -657,7 +724,7 @@ def incrementar_consecutivo_local():
     guardar_config("ultimo_consecutivo_local", str(next_num))
     return f"SST-2026-{next_num}"
 
-# --- CONSTRUCTOR DE DOCUMENTO ÚNICO INTELIGENTE (PRODUCCIÓN) ---
+# --- CONSTRUCTOR DE DOCUMENTO ÚNICO INTELIGENTE ---
 def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_file):
     if template_uploaded:
         doc_word = Document(template_uploaded)
@@ -682,7 +749,7 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
         else: consecutivo_final = incrementar_consecutivo_local()
         datos_trabajador["consecutivo"] = consecutivo_final
 
-    # CORRECCIÓN CLAVE: Agregamos el placeholder de vigilancia a simple_replacements para heredar el estilo de la tabla
+    # El placeholder {{Programa de vigilancia epidemiológica}} hereda el diseño del Word
     simple_replacements = {
         "{{NUMERO DE CONSECUTIVO}}": consecutivo_final, 
         "{{TIPO DE EXAMEN}}": datos_trabajador["tipo_examen"].upper(),
@@ -713,18 +780,18 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
                 
         aplicar_negrita_dinamica_cuerpo(p, datos_trabajador["tipo_examen"])
 
-    # Escaneo en párrafos del Documento Principal
+    # Escaneo en párrafos raíz del documento
     for p in list(doc_word.paragraphs):
         procesar_parrafo(p, doc_word)
 
-    # Escaneo en las tablas estructuradas
+    # Escaneo en tablas
     for table in doc_word.tables:
         for row in table.rows:
             for cell in row.cells:
                 for p in list(cell.paragraphs):
                     procesar_parrafo(p, cell)
                 
-                # Búsqueda y colocación de firma autorizada
+                # Inserción de la firma
                 idx_victor = -1
                 for idx, p in enumerate(cell.paragraphs):
                     if "VÍCTOR ALONSO MORENO CASAS" in p.text:
@@ -748,7 +815,7 @@ def convertir_docx_a_pdf(docx_bytes):
 
     pdf_path = temp_docx_path.replace(".docx", ".pdf")
     
-    # 1. Intentar conversión por LibreOffice (Entornos Linux / Streamlit Cloud)
+    # Intento 1: LibreOffice (Entorno de producción como Streamlit Cloud)
     try:
         subprocess.run([
             "libreoffice", "--headless", "--convert-to", "pdf", 
@@ -764,7 +831,7 @@ def convertir_docx_a_pdf(docx_bytes):
     except Exception:
         pass
 
-    # 2. Intentar conversión por docx2pdf (Sistemas Windows/Mac Locales)
+    # Intento 2: docx2pdf (Línea local de comandos para Windows/macOS)
     try:
         from docx2pdf import convert
         convert(temp_docx_path, pdf_path)
@@ -777,12 +844,11 @@ def convertir_docx_a_pdf(docx_bytes):
     except Exception:
         pass
 
-    # Limpiar archivos si hubo fallos
     if os.path.exists(temp_docx_path):
         os.unlink(temp_docx_path)
     return None, False
 
-# --- GENERADOR DE HTML COMPATIBLE ---
+# --- GENERADOR DE HTML ---
 def generar_html_vista(datos, consecutivo_num, lugar, fecha):
     return f"""
     <div style="font-family: Arial, sans-serif; color: #333; padding: 20px; line-height: 1.5; background: white; border: 1px solid #ccc; max-width: 800px; margin: auto;">
@@ -818,6 +884,9 @@ if st.sidebar.button("Cerrar Sesión"):
     st.session_state.textos_raw = {}
     st.session_state.export_bytes = None
     st.session_state.zip_bytes = None
+    st.session_state.processed_doc = None
+    st.session_state.prev_colaborador = None
+    st.session_state.document_count = 0
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -841,6 +910,12 @@ with col_izq:
     pdfs_subidos = st.file_uploader("Carga los archivos PDF:", type="pdf", accept_multiple_files=True)
     
     if pdfs_subidos:
+        # Si la cantidad de archivos cargados cambia, borramos los cachés de lotes para evitar desincronizaciones
+        if len(pdfs_subidos) != st.session_state.document_count:
+            st.session_state.documentos = {}
+            st.session_state.zip_bytes = None
+            st.session_state.document_count = len(pdfs_subidos)
+            
         for pdf in pdfs_subidos:
             if pdf.name not in st.session_state.documentos:
                 with pdfplumber.open(pdf) as p_file:
@@ -857,10 +932,18 @@ with col_izq:
         archivo_seleccionado = st.selectbox("🎯 Selecciona Colaborador:", list(st.session_state.documentos.keys()))
     else:
         archivo_seleccionado = None
+        st.session_state.documentos = {}
+        st.session_state.zip_bytes = None
+        st.session_state.document_count = 0
 
 with col_der:
     st.markdown("<h3 style='color:#60a5fa;'>📋 2. Editor del Trabajador Seleccionado</h3>", unsafe_allow_html=True)
     if archivo_seleccionado:
+        # Detectar cambio de colaborador seleccionado para limpiar la memoria de descarga anterior
+        if archivo_seleccionado != st.session_state.prev_colaborador:
+            st.session_state.processed_doc = None
+            st.session_state.prev_colaborador = archivo_seleccionado
+            
         doc_actual = st.session_state.documentos[archivo_seleccionado]
         
         col_f1, col_f2 = st.columns(2)
@@ -876,19 +959,24 @@ with col_der:
         examenes_realizados = st.text_area("Exámenes Realizados:", value="\n".join(doc_actual["examenes_lista"]))
         recom_medicas = st.text_area("Recomendaciones por Examen:", value="\n".join(doc_actual["recomendaciones_lista"]), height=130)
         
-        # UI: Campo editable del Programa de Vigilancia Epidemiológica antes de generar archivos
         programa_vigilancia = st.text_input("Programa de Vigilancia Epidemiológica (PVE):", value=doc_actual.get("vigilancia_programa", "NINGUNO"))
         
         observaciones = st.text_area("Observaciones:", value=doc_actual["observaciones"])
         remisiones = st.text_input("Remisiones (Escribe 'No' para marcarlo negativo):", value=doc_actual["remisiones"])
 
-        doc_actual.update({
+        # Detectar modificaciones en caliente de los campos de texto para invalidar descargas obsoletas
+        valores_actualizados = {
             "nombre": nombre_persona, "cargo": cargo_persona, "tipo_examen": tipo_examen,
             "examenes_lista": [l.strip() for l in examenes_realizados.split('\n') if l.strip()],
             "recomendaciones_lista": [l.strip() for l in recom_medicas.split('\n') if l.strip()],
             "observaciones": observaciones, "remisiones": remisiones,
             "vigilancia_programa": programa_vigilancia
-        })
+        }
+        
+        for clave, valor in valores_actualizados.items():
+            if doc_actual.get(clave) != valor:
+                st.session_state.processed_doc = None  # Reset del caché para obligar a procesar de nuevo
+                doc_actual[clave] = valor
 
         st.markdown("---")
         formato_salida = st.radio("⚡ Elige formato de generación:", ["Microsoft Word (.docx)", "Documento PDF Oficial (.pdf)", "Impresión de Respaldo Web (HTML)"], horizontal=True)
@@ -896,40 +984,55 @@ with col_der:
         col_act1, col_gen2 = st.columns(2)
         
         with col_act1:
-            if st.button("✨ Procesar y Descargar este Colaborador"):
-                with st.spinner("Procesando documento..."):
+            # Botón de Procesamiento puro (Sin descarga anidada)
+            if st.button("✨ Procesar este Colaborador"):
+                with st.spinner("Procesando y registrando documento..."):
+                    bytes_word, consec_num = generar_word_unico(doc_actual, lugar, fecha, template_uploaded, firma_file)
+                    
                     if "Word" in formato_salida:
-                        bytes_word, consec_num = generar_word_unico(doc_actual, lugar, fecha, template_uploaded, firma_file)
-                        if bytes_word:
-                            st.success(f"🟢 Guardado en Sheets (Consecutivo: {consec_num})")
-                            st.download_button("📥 Descargar Word (.docx)", data=bytes_word, file_name=f"Informe_{nombre_persona.replace(' ','_')}.docx")
+                        st.session_state.processed_doc = {
+                            "bytes": bytes_word,
+                            "consec_num": consec_num,
+                            "filename": f"Informe_{nombre_persona.replace(' ','_')}.docx",
+                            "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        }
                     elif "PDF" in formato_salida:
-                        bytes_word, consec_num = generar_word_unico(doc_actual, lugar, fecha, template_uploaded, firma_file)
-                        
-                        # Compilar el PDF convirtiendo directamente el Word con toda la estructura de la plantilla oficial
                         bytes_pdf, exito = convertir_docx_a_pdf(bytes_word)
                         if exito:
-                            st.success(f"🟢 Guardado en Sheets (Consecutivo: {consec_num})")
-                            st.download_button("📥 Descargar PDF Oficial (.pdf)", data=bytes_pdf, file_name=f"Informe_{nombre_persona.replace(' ','_')}.pdf", mime="application/pdf")
+                            st.session_state.processed_doc = {
+                                "bytes": bytes_pdf,
+                                "consec_num": consec_num,
+                                "filename": f"Informe_{nombre_persona.replace(' ','_')}.pdf",
+                                "mime": "application/pdf"
+                            }
                         else:
                             st.error("⚠️ No se pudo compilar el PDF de manera directa para coincidir con el Word.")
-                            st.info("""
-                            **Para activar la conversión idéntica en Word-to-PDF de forma automática:**
-                            1. **En la Nube (GitHub/Streamlit Cloud):** Asegúrate de tener un archivo `packages.txt` con la línea `libreoffice` para que el servidor convierta el archivo.
-                            2. **En tu Computadora (Local):** Ejecuta `pip install docx2pdf` en tu consola.
-                            
-                            *Como alternativa temporal, puedes descargar tu reporte en formato **Microsoft Word (.docx)** y guardarlo como PDF directamente desde el programa Word.*
-                            """)
                     else:
-                        _, consec_num = generar_word_unico(doc_actual, lugar, fecha, template_uploaded, None)
                         html_out = generar_html_vista(doc_actual, consec_num, lugar, fecha)
-                        st.success(f"🟢 Guardado en Sheets (Consecutivo: {consec_num})")
-                        st.download_button("📥 Descargar Documento Imprimible (.html)", data=html_out.encode('utf-8'), file_name=f"Informe_{nombre_persona.replace(' ','_')}.html")
+                        st.session_state.processed_doc = {
+                            "bytes": html_out.encode('utf-8'),
+                            "consec_num": consec_num,
+                            "filename": f"Informe_{nombre_persona.replace(' ','_')}.html",
+                            "mime": "text/html"
+                        }
+                st.rerun()  # Rerun limpio para actualizar la interfaz del DOM
+            
+            # Botón de Descarga ESTABLE (Fuera del flujo condicional del procesador)
+            if st.session_state.processed_doc is not None:
+                doc_info = st.session_state.processed_doc
+                st.success(f"🟢 Guardado con éxito en base (Consecutivo: {doc_info['consec_num']})")
+                st.download_button(
+                    label=f"📥 Descargar archivo generado ({doc_info['filename'].split('.')[-1].upper()})",
+                    data=doc_info["bytes"],
+                    file_name=doc_info["filename"],
+                    mime=doc_info["mime"]
+                )
                         
         with col_gen2:
             if len(st.session_state.documentos) > 1:
-                if st.button("📦 Generar TODOS los Colaboradores (ZIP)"):
-                    with st.spinner("Generando lote masivo..."):
+                # Botón de Procesamiento de Lote puro
+                if st.button("📦 Procesar TODOS los Colaboradores (ZIP)"):
+                    with st.spinner("Compilando lote masivo..."):
                         zip_buffer = io.BytesIO()
                         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                             for filename, datos_trab in st.session_state.documentos.items():
@@ -942,7 +1045,6 @@ with col_der:
                                     if exito:
                                         zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.pdf", bytes_pdf)
                                     else:
-                                        # Si el motor de conversión a PDF no está listo, guarda el docx para no romper el ZIP
                                         zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.docx", bytes_word)
                                 else:
                                     html_out = generar_html_vista(datos_trab, consec_num, lugar, fecha)
@@ -951,8 +1053,15 @@ with col_der:
                         zip_buffer.seek(0)
                         st.session_state.zip_bytes = zip_buffer.getvalue()
                         st.success("🎉 ZIP de lote masivo compilado con éxito.")
+                        st.rerun()
                         
-                if st.session_state.zip_bytes:
-                    st.download_button("📥 Descargar ZIP Masivo", data=st.session_state.zip_bytes, file_name=f"Lote_SST_JER_SA_{fecha.strftime('%Y%m%d')}.zip", mime="application/zip")
+                # Botón de Descarga de Lote ESTABLE
+                if st.session_state.zip_bytes is not None:
+                    st.download_button(
+                        label="📥 Descargar ZIP Masivo", 
+                        data=st.session_state.zip_bytes, 
+                        file_name=f"Lote_SST_JER_SA_{fecha.strftime('%Y%m%d')}.zip", 
+                        mime="application/zip"
+                    )
     else:
         st.markdown("<div style='text-align:center; padding: 40px; color:#64748b;'><h3>👋 Tablero Listo</h3><p>Por favor, arrastra tus archivos PDF en la sección izquierda para activar el procesamiento automático.</p></div>", unsafe_allow_html=True)
