@@ -21,54 +21,48 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- INYECCIÓN DE CSS ULTRA-ESTRICTO: MODO OSCURO PREMIUM (DARK CARBON TECH) ---
+# --- INYECCIÓN DE CSS: MODO OSCURO PREMIUM (DARK CARBON TECH) ---
 st.markdown("""
     <style>
-    /* Fondo Global y Textos en Modo Oscuro */
     html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"], [data-testid="stHeader"] {
         background-color: #0b0f19 !important;
         color: #f8fafc !important;
     }
     
-    /* CONTENEDOR DE LOGIN ESTILO PREMIUM OSCURO */
     .login-box {
         max-width: 450px;
         margin: 80px auto;
         padding: 40px;
-        background-color: #111827 !important; /* Gris carbón profundo */
+        background-color: #111827 !important;
         border-radius: 16px;
         box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
         border: 1px solid #1f2937;
     }
     
-    /* Encabezados del Login */
     .login-box h2 {
-        color: #3b82f6 !important; /* Azul eléctrico de alta fidelidad */
+        color: #3b82f6 !important;
         text-align: center;
         margin-bottom: 5px;
         font-weight: 700;
     }
     .login-box p {
-        color: #9ca3af !important; /* Gris plata suave */
+        color: #9ca3af !important;
         text-align: center;
         font-size: 14px;
     }
     
-    /* Forzar visibilidad en los textos de selección (Radios) */
     div[data-testid="stRadio"] label p {
         color: #f3f4f6 !important;
         font-weight: 600 !important;
         font-size: 14px !important;
     }
     
-    /* Forzar visibilidad de todas las etiquetas de la aplicación */
     div[data-testid="stWidgetLabel"] p {
-        color: #60a5fa !important; /* Azul cielo legible sobre fondo oscuro */
+        color: #60a5fa !important;
         font-weight: 600 !important;
         font-size: 15px !important;
     }
     
-    /* CAJAS DE ENTRADA Y EDITORES OSCUROS CON LETRA BLANCA */
     div[data-baseweb="input"] {
         background-color: #1f2937 !important;
         border: 1px solid #374151 !important;
@@ -85,7 +79,6 @@ st.markdown("""
         border-radius: 8px !important;
     }
     
-    /* PESTAÑAS (TABS) INTERNAS EN MODO OSCURO */
     button[data-baseweb="tab"] p {
         color: #9ca3af !important;
     }
@@ -94,7 +87,6 @@ st.markdown("""
         font-weight: 700 !important;
     }
     
-    /* BOTONES DE LUJO CON DEGRADADO DINÁMICO */
     .stButton>button {
         background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
         color: #ffffff !important;
@@ -112,7 +104,6 @@ st.markdown("""
         filter: brightness(115%);
     }
     
-    /* Banner institucional interno */
     .header-banner {
         background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%);
         padding: 22px;
@@ -123,7 +114,6 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
     }
     
-    /* Tarjetas informativas de métricas */
     .metric-card {
         background-color: #111827 !important;
         padding: 15px;
@@ -134,7 +124,6 @@ st.markdown("""
         color: #e5e7eb !important;
     }
     
-    /* Bloques de expander o cajas colapsables */
     div[data-testid="stExpander"] {
         background-color: #111827 !important;
         border: 1px solid #1f2937 !important;
@@ -472,7 +461,6 @@ def analizar_pdf_inteligente(texto):
         ["RECOMENDACIONES", "REMISIONES", "VIGILANCIA", "FIRMA", "ATENTAMENTE"]
     ))
 
-    # Extracción estricta de remisiones
     rem_raw = extraer_seccion(texto,
         ["INFORMACION DE REMISIONES", "INFORMACIÓN DE REMISIONES"],
         ["RECOMENDACIONES", "OBSERVACIONES", "VIGILANCIA", "FIRMA", "ATENTAMENTE", "DIAGNOSTICOS", "DIAGNÓSTICOS", "CONSENTIMIENTO", "AUTORIZO"]
@@ -626,7 +614,7 @@ def cargar_plantilla_base(archivo_cargado):
         return Document("FORMATO RECOMENDACIONES MEDICAS BOT.docx")
     return None
 
-# --- BANNER DE BIENVENIDA (AQUÍ ADENTRO SÓLO LOGUEADO) ---
+# --- BANNER DE BIENVENIDA ---
 st.markdown(f"""
     <div class='header-banner'>
         <h1 style='margin:0; font-size:26px; color:#ffffff;'>🩺 Automatización de Medicina Preventiva</h1>
@@ -723,7 +711,7 @@ with col_der:
             examenes_realizados = st.text_area("Exámenes Realizados (Uno por línea):", value=examenes_unificados, key=f"ex_{archivo_seleccionado}", height=130)
             
         with tab2:
-            recom_unificadas = "; ".join(doc_actual["recommendaciones_lista"])
+            recom_unificadas = "; ".join(doc_actual["recomendaciones_lista"])
             recom_medicas = st.text_area("Recomendaciones Médicas:", value=recom_unificadas, key=f"recom_{archivo_seleccionado}", height=100)
             
             vigilancia_unificada = "; ".join(doc_actual["vigilancia_lista"])
@@ -738,8 +726,8 @@ with col_der:
         doc_actual["cargo"] = cargo_persona
         doc_actual["tipo_examen"] = tipo_examen
         doc_actual["examenes_lista"] = [linea.strip() for linea in examenes_realizados.split('\n') if linea.strip()]
-        doc_actual["recomendaciones"] = a_caso_oracion(recom_medicas)
-        doc_actual["vigilancia"] = a_caso_oracion(vigilancia)
+        doc_actual["recomendaciones_lista"] = [r.strip() for r in recom_medicas.split(';') if r.strip()]
+        doc_actual["vigilancia_lista"] = [v.strip() for v in vigilancia.split(';') if v.strip()]
         doc_actual["observaciones"] = a_caso_oracion(observaciones)
         doc_actual["remisiones"] = remisiones
 
@@ -785,8 +773,8 @@ with col_der:
                 "{{FECHA HOY}}": fecha_formateada,
                 "{{NOMBRE DE LA PERSONA}}": datos_trabajador["nombre"],
                 "{{CARGO DE LA PERSONA}}": datos_trabajador["cargo"],
-                "{{Recomendaciones médicas}}": a_caso_oracion(datos_trabajador["recomendaciones"]) if datos_trabajador["recomendaciones"] else "No registra.",
-                "{{Programa de vigilancia epidemiológica}}": a_caso_oracion(datos_trabajador["vigilancia"]) if datos_trabajador["vigilancia"] else "Ninguno.",
+                "{{Recomendaciones médicas}}": a_caso_oracion("; ".join(datos_trabajador["recomendaciones_lista"])) if datos_trabajador["recomendaciones_lista"] else "No registra.",
+                "{{Programa de vigilancia epidemiológica}}": a_caso_oracion("; ".join(datos_trabajador["vigilancia_lista"])) if datos_trabajador["vigilancia_lista"] else "Ninguno.",
                 "{{Observaciones}}": a_caso_oracion(datos_trabajador["observaciones"]) if datos_trabajador["observaciones"] else "Ninguna."
             }
 
