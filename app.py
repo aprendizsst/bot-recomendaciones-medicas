@@ -80,7 +80,7 @@ def actualizar_contrasena(user, old_pwd, new_pwd):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT contrasena FROM usuarios WHERE usuario = ?", (user.lower().strip(),))
-    resultado = c.fetchone()
+    resultado = r = c.fetchone()
     if resultado and resultado[0] == hash_password(old_pwd):
         c.execute("UPDATE usuarios SET contrasena = ? WHERE usuario = ?", (hash_password(new_pwd), user.lower().strip()))
         conn.commit()
@@ -223,12 +223,15 @@ def analizar_pdf_inteligente(texto):
     }
     if not texto: return datos
 
+    # 1. Nombre
     m_nom = re.search(r'(?:Nombre|Paciente|Colaborador|Trabajador):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_nom: datos["nombre"] = limpiar_campo(m_nom.group(1))
 
+    # 2. Cargo
     m_car = re.search(r'(?:Cargo|Ocupación|Ocupacion|Puesto):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_car: datos["cargo"] = limpiar_campo(m_car.group(1))
 
+    # 3. Tipo de Examen
     m_tipo = re.search(r'(?:Tipo de Examen|Concepto|Evaluación|Evaluacion|Motivo|Clase de Examen):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_tipo: 
         datos["tipo_examen"] = limpiar_campo(m_tipo.group(1)).upper()
@@ -238,6 +241,7 @@ def analizar_pdf_inteligente(texto):
                 datos["tipo_examen"] = palabra
                 break
 
+    # --- MAPA DE EXÁMENES CLAVE ---
     EXAMS_MAP = {
         "AUDIOMETRIA DE TONOS": "Audiometría",
         "AUDIOMETRIA": "Audiometría",
@@ -359,7 +363,7 @@ def replace_in_paragraph(paragraph, key, value):
     if not replaced_in_runs:
         paragraph.text = paragraph.text.replace(key, value)
 
-# --- REEMPLAZO DINÁMICO POR VIÑETAS NATIVAS EN WORD ---
+# --- REEMPLAZO DINÁMICO POR VIÑETAS NATIVAS EN WORD (A PRUEBA DE CRASHES) ---
 def replace_placeholder_with_bullets(cell, placeholder, items_list):
     for p in cell.paragraphs:
         if placeholder in p.text:
@@ -368,16 +372,23 @@ def replace_placeholder_with_bullets(cell, placeholder, items_list):
                 p.text = "Ninguno."
                 return
             
-            p.style = 'List Bullet'
-            p.add_run(items_list[0])
+            # Intentamos usar estilo List Bullet, si no existe usamos fallback manual
+            try:
+                p.style = 'List Bullet'
+                p.add_run(items_list[0])
+            except KeyError:
+                p.add_run("• " + items_list[0])
             
             current_p = p
             for item in items_list[1:]:
                 new_p = OxmlElement('w:p')
                 current_p._p.addnext(new_p)
                 new_para = Paragraph(new_p, cell)
-                new_para.style = 'List Bullet'
-                new_para.add_run(item)
+                try:
+                    new_para.style = 'List Bullet'
+                    new_para.add_run(item)
+                except KeyError:
+                    new_para.add_run("• " + item)
                 current_p = new_para
             return
 
@@ -408,8 +419,11 @@ def procesar_remisiones_en_celda(cell, remisiones_text):
                     new_p = OxmlElement('w:p')
                     current_p._p.addnext(new_p)
                     new_para = Paragraph(new_p, cell)
-                    new_para.style = 'List Bullet'
-                    new_para.add_run(item)
+                    try:
+                        new_para.style = 'List Bullet'
+                        new_para.add_run(item)
+                    except KeyError:
+                        new_para.add_run("• " + item)
                     current_p = new_para
                 return
 
@@ -560,7 +574,7 @@ with col_der:
             for eng, esp in meses.items():
                 fecha_formateada = fecha_formateada.replace(eng, esp)
 
-            # Diccionario de Reemplazos Simples de Texto con validación de Caso Oración final
+            # Diccionario de Reemplazos Simples de Texto
             replacements = {
                 "{{NUMERO DE CONSECUTIVO}}": consecutivo_final,
                 "{{TIPO DE EXAMEN}}": datos_trabajador["tipo_examen"].upper(),
@@ -585,7 +599,7 @@ with col_der:
                         replace_placeholder_with_bullets(cell, "{{LISTA DE EXAMENES REALIZADOS}}", datos_trabajador["examenes_lista"])
                         replace_placeholder_with_bullets(cell, "{{LISTA DE EXAMENES REALIZADOS", datos_trabajador["examenes_lista"])
                         
-                        # 3. Procesamiento Inteligente de Remisiones (Habilitar Listas o Borrar la Sección)
+                        # 3. Procesamiento Inteligente de Remisiones
                         procesar_remisiones_en_celda(cell, datos_trabajador["remisiones"])
                         
                         # 4. Estampado de Firma Autorizada
