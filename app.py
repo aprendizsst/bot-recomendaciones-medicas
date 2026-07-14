@@ -21,106 +21,124 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- INYECCIÓN DE CSS ESTRICTO PARA CORREGIR CONTRASTE Y COLORES ---
+# --- INYECCIÓN DE CSS ULTRA-ESTRICTO: MODO OSCURO PREMIUM (DARK CARBON TECH) ---
 st.markdown("""
     <style>
-    /* Fondo global de la aplicación */
-    [data-testid="stAppViewContainer"] {
-        background-color: #f8fafc !important;
+    /* Fondo Global y Textos en Modo Oscuro */
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"], [data-testid="stHeader"] {
+        background-color: #0b0f19 !important;
+        color: #f8fafc !important;
     }
     
-    /* CONTROL DE ALTO CONTRASTE PARA LOGIN */
+    /* CONTENEDOR DE LOGIN ESTILO PREMIUM OSCURO */
     .login-box {
         max-width: 450px;
-        margin: 60px auto;
-        padding: 35px;
-        background-color: #ffffff !important;
-        border-radius: 14px;
-        box-shadow: 0 10px 25px rgba(0,0,0,0.05);
-        border: 1px solid #e2e8f0;
+        margin: 80px auto;
+        padding: 40px;
+        background-color: #111827 !important; /* Gris carbón profundo */
+        border-radius: 16px;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+        border: 1px solid #1f2937;
     }
     
-    /* Forzar visibilidad de títulos y subtítulos */
+    /* Encabezados del Login */
     .login-box h2 {
-        color: #1f4e79 !important;
+        color: #3b82f6 !important; /* Azul eléctrico de alta fidelidad */
         text-align: center;
         margin-bottom: 5px;
         font-weight: 700;
     }
     .login-box p {
-        color: #475569 !important;
+        color: #9ca3af !important; /* Gris plata suave */
         text-align: center;
         font-size: 14px;
     }
     
-    /* FORZAR VISIBILIDAD EN TEXTOS DE RADIOS (Botones de selección) */
+    /* Forzar visibilidad en los textos de selección (Radios) */
     div[data-testid="stRadio"] label p {
-        color: #1e293b !important;
+        color: #f3f4f6 !important;
         font-weight: 600 !important;
         font-size: 14px !important;
     }
     
-    /* FORZAR VISIBILIDAD EN LAS ETIQUETAS DE LOS INPUTS (Usuario, Contraseña, etc.) */
+    /* Forzar visibilidad de todas las etiquetas de la aplicación */
     div[data-testid="stWidgetLabel"] p {
-        color: #1f4e79 !important;
+        color: #60a5fa !important; /* Azul cielo legible sobre fondo oscuro */
         font-weight: 600 !important;
         font-size: 15px !important;
     }
     
-    /* CORRECCIÓN ABSOLUTA DE LAS CAJAS DE TEXTO (INPUTS BLANCOS) */
+    /* CAJAS DE ENTRADA Y EDITORES OSCUROS CON LETRA BLANCA */
     div[data-baseweb="input"] {
-        background-color: #ffffff !important;
-        border: 1px solid #cbd5e1 !important;
+        background-color: #1f2937 !important;
+        border: 1px solid #374151 !important;
         border-radius: 8px !important;
     }
     div[data-baseweb="input"] input {
-        color: #0f172a !important;
-        background-color: #ffffff !important;
+        color: #ffffff !important;
+        background-color: #1f2937 !important;
     }
     div[data-testid="stTextArea"] textarea {
-        color: #0f172a !important;
-        background-color: #ffffff !important;
-        border: 1px solid #cbd5e1 !important;
+        color: #ffffff !important;
+        background-color: #1f2937 !important;
+        border: 1px solid #374151 !important;
         border-radius: 8px !important;
     }
     
-    /* DISEÑO DE BOTONES PREMIUM */
+    /* PESTAÑAS (TABS) INTERNAS EN MODO OSCURO */
+    button[data-baseweb="tab"] p {
+        color: #9ca3af !important;
+    }
+    button[data-baseweb="tab"][aria-selected="true"] p {
+        color: #3b82f6 !important;
+        font-weight: 700 !important;
+    }
+    
+    /* BOTONES DE LUJO CON DEGRADADO DINÁMICO */
     .stButton>button {
-        background: linear-gradient(135deg, #1f4e79 0%, #2a6f97 100%) !important;
+        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
         color: #ffffff !important;
         border-radius: 8px !important;
-        padding: 10px 24px !important;
-        font-weight: 600 !important;
+        padding: 12px 24px !important;
+        font-weight: 700 !important;
         border: none !important;
-        transition: all 0.2s ease !important;
-        box-shadow: 0 4px 10px rgba(31, 78, 121, 0.15) !important;
+        transition: all 0.2s ease-in-out !important;
+        box-shadow: 0 4px 14px rgba(37, 99, 235, 0.3) !important;
         width: 100%;
     }
     .stButton>button:hover {
         transform: translateY(-1px) !important;
-        box-shadow: 0 6px 15px rgba(31, 78, 121, 0.25) !important;
-        filter: brightness(105%);
+        box-shadow: 0 6px 20px rgba(37, 99, 235, 0.5) !important;
+        filter: brightness(115%);
     }
     
     /* Banner institucional interno */
     .header-banner {
-        background: linear-gradient(135deg, #1f4e79 0%, #2a6f97 100%);
+        background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%);
         padding: 22px;
         border-radius: 12px;
-        color: white;
+        color: #ffffff !important;
         margin-bottom: 25px;
-        box-shadow: 0 4px 12px rgba(31, 78, 121, 0.15);
+        border: 1px solid #1e2937;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
     }
     
-    /* Tarjetas informativas internas */
+    /* Tarjetas informativas de métricas */
     .metric-card {
-        background: #ffffff;
+        background-color: #111827 !important;
         padding: 15px;
         border-radius: 10px;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.02);
-        border-left: 5px solid #1f4e79;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+        border-left: 5px solid #2563eb;
         margin-bottom: 12px;
-        color: #334155;
+        color: #e5e7eb !important;
+    }
+    
+    /* Bloques de expander o cajas colapsables */
+    div[data-testid="stExpander"] {
+        background-color: #111827 !important;
+        border: 1px solid #1f2937 !important;
+        border-radius: 8px !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -617,7 +635,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # --- PANEL LATERAL CON ESTILO ---
-st.sidebar.markdown(f"<h3 style='color:#1f4e79;'>👤 Perfil Activo</h3>", unsafe_allow_html=True)
+st.sidebar.markdown(f"<h3 style='color:#60a5fa;'>👤 Perfil Activo</h3>", unsafe_allow_html=True)
 st.sidebar.markdown(f"<div class='metric-card'><strong>Usuario:</strong> {st.session_state.username}</div>", unsafe_allow_html=True)
 if st.sidebar.button("Cerrar Sesión"):
     st.session_state.logged_in = False
@@ -645,7 +663,7 @@ firma_file = st.sidebar.file_uploader("Estampa de Firma Autorizada (.png / .jpg)
 col_izq, col_der = st.columns([1, 1.2])
 
 with col_izq:
-    st.markdown("<h3 style='color:#1f4e79;'>📂 1. Carga de Documentos</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='color:#60a5fa;'>📂 1. Carga de Documentos</h3>", unsafe_allow_html=True)
     pdfs_subidos = st.file_uploader("Arrastra aquí los archivos PDF médicos:", type="pdf", accept_multiple_files=True)
     
     if pdfs_subidos:
@@ -661,8 +679,8 @@ with col_izq:
         
         st.markdown(f"""
             <div style='display:flex; gap:10px; margin-top:15px;'>
-                <div class='metric-card' style='flex:1;'><strong>PDFs Leídos</strong><br><span style='font-size:20px; font-weight:700; color:#1f4e79;'>{len(st.session_state.documentos)}</span></div>
-                <div class='metric-card' style='flex:1;'><strong>Nube Sheets</strong><br><span style='font-size:14px; font-weight:600; color:green;'>{'Conectado' if g_url_guardada else 'Modo Respaldo'}</span></div>
+                <div class='metric-card' style='flex:1;'><strong>PDFs Leídos</strong><br><span style='font-size:20px; font-weight:700; color:#60a5fa;'>{len(st.session_state.documentos)}</span></div>
+                <div class='metric-card' style='flex:1;'><strong>Nube Sheets</strong><br><span style='font-size:14px; font-weight:600; color:#4ade80;'>{'Conectado' if g_url_guardada else 'Modo Respaldo'}</span></div>
             </div>
         """, unsafe_allow_html=True)
         
@@ -678,7 +696,7 @@ with col_izq:
             st.text_area("Texto de origen:", value=st.session_state.textos_raw[archivo_seleccionado], height=250)
 
 with col_der:
-    st.markdown("<h3 style='color:#1f4e79;'>📋 2. Editor del Trabajador Seleccionado</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='color:#60a5fa;'>📋 2. Editor del Trabajador Seleccionado</h3>", unsafe_allow_html=True)
     
     if archivo_seleccionado:
         doc_actual = st.session_state.documentos[archivo_seleccionado]
@@ -705,7 +723,7 @@ with col_der:
             examenes_realizados = st.text_area("Exámenes Realizados (Uno por línea):", value=examenes_unificados, key=f"ex_{archivo_seleccionado}", height=130)
             
         with tab2:
-            recom_unificadas = "; ".join(doc_actual["recomendaciones_lista"])
+            recom_unificadas = "; ".join(doc_actual["recommendaciones_lista"])
             recom_medicas = st.text_area("Recomendaciones Médicas:", value=recom_unificadas, key=f"recom_{archivo_seleccionado}", height=100)
             
             vigilancia_unificada = "; ".join(doc_actual["vigilancia_lista"])
