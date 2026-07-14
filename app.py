@@ -21,7 +21,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- INYECCIÓN DE CSS MODO OSCURO PREMIUM ---
+# --- INYECCIÓN DE CSS: MODO OSCURO PREMIUM ---
 st.markdown("""
     <style>
     html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"], [data-testid="stHeader"] {
@@ -289,7 +289,8 @@ def corregir_ortografia_sst(texto):
         r'\bfisica\b': 'física', r'\bmedico\b': 'médico', r'\bperiodico\b': 'periódico',
         r'\bproteccion\b': 'protección', r'\balimentacion\b': 'alimentación',
         r'\brecomendacion\b': 'recomendación', r'\bperfil\s+lipidico\b': 'perfil lipídico',
-        r'\benfasis\b': 'énfasis', r'\bosteomuscular\b': 'osteomuscular'
+        r'\benfasis\b': 'énfasis', r'\bosteomuscular\b': 'osteomuscular',
+        r'\bregion\b': 'región', r'\bhabitos\b': 'hábitos'
     }
     for patron, reemplazo in diccionario_SST.items():
         texto = re.sub(patron, reemplazo, texto, flags=re.IGNORECASE)
@@ -309,7 +310,7 @@ def limpiar_campo(texto):
     partes = re.split(r'\b(Teléfono|Telefono|Tel|C\.C|CC|Documento|Cedula|Cargo|Fecha)\b', texto, flags=re.IGNORECASE)
     return re.sub(r'[:\-,_]+', '', partes[0]).strip().title()
 
-# --- EXTRACTOR AVANZADO FILTRADO POR TIPO DE EXAMEN ---
+# --- EXTRACTOR AVANZADO CON ACUMULADOR DE MEMORIA (MULTILÍNEA) ---
 def analizar_pdf_inteligente(texto):
     datos = {
         "nombre": "", "cargo": "", "tipo_examen": "PERIODICO",
@@ -334,38 +335,85 @@ def analizar_pdf_inteligente(texto):
         "ESPIROMETRIA": "Espiometría", "OPTOMETRIA": "Optometría",
         "EXAMEN MEDICO OCUPACIONAL": "Examen Clínico Ocupacional",
         "PERFIL LIPIDICO": "Perfil Lipídico", "GLICEMIA": "Glicemia",
-        "ENFASIS OSTEOMUSCULAR": "Énfasis Osteomuscular", "ELECTROCARDIOGRAMA": "Electrocardiograma"
+        "ENFASIS OSTEOMUSCULAR": "Énfasis Osteomuscular", "ELECTROCARDIOGRAMA DE RITMO": "Electrocardiograma", 
+        "ELECTROCARDIOGRAMA": "Electrocardiograma", "FROTIS": "Frotis",
+        "CUADRO HEMATICO": "Cuadro Hemático", "COLESTEROL": "Colesterol",
+        "TRIGLICERIDOS": "Triglicéridos", "PARCIAL DE ORINA": "Parcial de Orina",
+        "VSH": "VSH", "PCR": "PCR"
     }
 
     examenes_detectados = []
-    recoms_por_examen = []
-    pve_detectados = set()
+    recoms_raw_dict = {}
+    current_exam = None
+    exam_text_accumulator = ""
+    in_exams_section = True
 
+    # Lectura Multilínea Inteligente
     lineas = texto.split('\n')
     for linea in lineas:
         linea_upper = linea.upper().strip()
-        matched_key = None
-        for key in sorted(EXAMS_MAP.keys(), key=len, reverse=True):
-            if key in linea_upper:
-                matched_key = key
-                break
         
-        if matched_key:
-            nombre_examen = EXAMS_MAP[matched_key]
-            if nombre_examen not in examenes_detectados:
-                examenes_detectados.append(nombre_examen)
+        if any(stop in linea_upper for stop in ["OBSERVACIONES:", "OBSERVACION:", "REMISIONES:", "SISTEMA DE VIGILANCIA"]):
+            in_exams_section = False
+            if current_exam:
+                recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "") + " " + exam_text_accumulator
+                current_exam = None
+                
+        if in_exams_section:
+            matched_key = None
+            for key in sorted(EXAMS_MAP.keys(), key=len, reverse=True):
+                # Detecta si el examen está al inicio del renglón (primeros 15 caracteres)
+                if key in linea_upper and linea_upper.find(key) < 15:
+                    matched_key = key
+                    break
             
-            idx = linea_upper.find(matched_key) + len(matched_key)
-            rec_part = linea[idx:].strip(" :-,_/")
+            if matched_key:
+                # Si encontró un examen nuevo, guarda el acumulado del anterior
+                if current_exam:
+                    recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "") + " " + exam_text_accumulator
+                
+                current_exam = EXAMS_MAP[matched_key]
+                if current_exam not in examenes_detectados:
+                    examenes_detectados.append(current_exam)
+                
+                # Inicia el nuevo acumulador
+                idx = linea_upper.find(matched_key) + len(matched_key)
+                exam_text_accumulator = linea[idx:].strip(" :-,_/")
+            else:
+                # Si no es un examen nuevo, cose la línea actual a la memoria del examen anterior
+                if current_exam and linea.strip():
+                    exam_text_accumulator += " " + linea.strip()
+
+    # Guarda el último examen que haya quedado en memoria al terminar el bloque
+    if current_exam:
+        recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "") + " " + exam_text_accumulator
+
+    recoms_por_examen = []
+    pve_detectados = set()
+
+    # Procesamiento y Limpieza de los bloques armados
+    for exam in examenes_detectados:
+        rec_part = recoms_raw_dict.get(exam, "").strip()
+        status_exclusions = ["REALIZADO", "REALZIADO", "SIN ALTERACIONES", "NORMAL", "SANO", "NEGATIVO", "NO REGISTRA", "N/A", ""]
+        
+        if rec_part.upper().strip(" .") not in status_exclusions and len(rec_part) > 3:
+            # Dividimos por //, punto y coma, o listas numeradas (omitimos las comas para NO romper oraciones largas)
+            parts = re.split(r'//|;|\b\d+\.|\b\d+\-', rec_part)
             
-            if rec_part.upper().strip(" .") not in ["REALIZADO", "REALZIADO", "SIN ALTERACIONES", "NORMAL", "SANO", ""]:
-                p_clean = a_caso_oracion(rec_part)
-                if p_clean and len(p_clean) > 3:
-                    recoms_por_examen.append(f"{nombre_examen}: {p_clean}")
+            valid_parts = []
+            for p in parts:
+                p_clean = p.strip(" .-_/()[]")
+                if p_clean and len(p_clean) > 3 and p_clean.upper() not in status_exclusions:
+                    valid_parts.append(a_caso_oracion(p_clean))
                     
-                    if any(w in p_clean.upper() for w in ["AUDITIV", "RUIDO"]): pve_detectados.add("Conservación Auditiva")
-                    elif any(w in p_clean.upper() for w in ["POSTURAL", "LUMBAR", "OSTEOMUSCULAR"]): pve_detectados.add("Prevención Osteomuscular (DME)")
-                    elif any(w in p_clean.upper() for w in ["VISUAL", "GAFAS", "RX"]): pve_detectados.add("Conservación Visual")
+                    p_upper = p_clean.upper()
+                    if any(w in p_upper for w in ["AUDITIV", "RUIDO", "OIDO", "AUDIO"]): pve_detectados.add("Conservación Auditiva")
+                    elif any(w in p_upper for w in ["POSTURAL", "LUMBAR", "OSTEOMUSCULAR", "ERGONOMIC"]): pve_detectados.add("Prevención Osteomuscular (DME)")
+                    elif any(w in p_upper for w in ["VISUAL", "GAFAS", "RX", "VISION", "LENTES"]): pve_detectados.add("Conservación Visual")
+                    elif any(w in p_upper for w in ["RESPIRATORI", "ESPIROMETR", "POLVO", "HUMO"]): pve_detectados.add("Conservación Respiratoria")
+            
+            if valid_parts:
+                recoms_por_examen.append(f"{exam}: {' - '.join(valid_parts)}")
 
     datos["examenes_lista"] = examenes_detectados
     datos["recomendaciones_lista"] = recoms_por_examen
@@ -398,18 +446,14 @@ def analizar_pdf_inteligente(texto):
 
 # --- FORMATEADOR DINÁMICO DE NEGRITAS EN EL CUERPO ---
 def aplicar_negrita_dinamica_cuerpo(paragraph, tipo_examen):
-    """Busca el párrafo de lineamientos y aplica negrita al tipo de examen correspondiente"""
     texto_parrafo = paragraph.text
     if "Según los lineamientos del programa de medicina preventiva" not in texto_parrafo:
         return
         
-    paragraph.text = "" # Limpiamos el texto plano
-    
-    # Base del texto institucional antes del paréntesis
+    paragraph.text = "" 
     p1 = "Según los lineamientos del programa de medicina preventiva y del trabajo de JER S.A; se hace entrega de las recomendaciones establecidas por el Proveedor de servicios de Exámenes Médico Ocupacionales ("
     paragraph.add_run(p1)
     
-    # Opciones con su respectiva validación de negrita
     opciones = [
         ("Ingreso", "INGRESO" in tipo_examen.upper()),
         ("Periódico", "PERIODIC" in tipo_examen.upper() or "PERIÓDIC" in tipo_examen.upper()),
@@ -420,17 +464,37 @@ def aplicar_negrita_dinamica_cuerpo(paragraph, tipo_examen):
     
     for i, (texto_opcion, condicion) in enumerate(opciones):
         run = paragraph.add_run(texto_opcion)
-        run.bold = condicion # Pone negrita si la condición se cumple
-        
+        run.bold = condicion 
         if i < len(opciones) - 1:
-            if i == len(opciones) - 2:
-                paragraph.add_run(" y ")
-            else:
-                paragraph.add_run(", ")
+            if i == len(opciones) - 2: paragraph.add_run(" y ")
+            else: paragraph.add_run(", ")
                 
     paragraph.add_run(")")
 
 # --- MANEJO DE CONSECUTIVO Y VIÑETAS CLONADAS ---
+def obtener_siguiente_consecutivo_local():
+    val = obtener_config("ultimo_consecutivo_local")
+    return int(val) + 1 if val else 1
+
+def incrementar_consecutivo_local():
+    next_num = obtener_siguiente_consecutivo_local()
+    guardar_config("ultimo_consecutivo_local", str(next_num))
+    return f"SST-2026-{next_num}"
+
+def replace_in_paragraph(paragraph, key, value):
+    if key not in paragraph.text: return
+    replaced_in_runs = False
+    for run in paragraph.runs:
+        if key in run.text:
+            font_name, font_size, bold, italic, color = run.font.name, run.font.size, run.bold, run.italic, (run.font.color.rgb if run.font.color else None)
+            run.text = run.text.replace(key, value)
+            if font_name: run.font.name = font_name
+            if font_size: run.font.size = font_size
+            run.bold, run.italic = bold, italic
+            if color: run.font.color.rgb = color
+            replaced_in_runs = True
+    if not replaced_in_runs: paragraph.text = paragraph.text.replace(key, value)
+
 def replace_placeholder_with_bullets(cell, placeholder, items_list):
     for p in cell.paragraphs:
         if placeholder in p.text:
@@ -490,13 +554,100 @@ def generar_html_vista(datos, consecutivo_num, lugar, fecha):
     </div>
     """
 
-# --- VISTA STREAMLIT ---
-st.markdown("<div class='header-banner'><h1>🩺 Portal de Control SST - JER S.A.</h1><p>Generación de Comunicaciones con Negrita Dinámica y Multiformato</p></div>", unsafe_allow_html=True)
+# --- CONSTRUCTOR DE DOCUMENTO ÚNICO INTELIGENTE ---
+def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_file):
+    if template_uploaded:
+        doc_word = Document(template_uploaded)
+    elif os.path.exists("FORMATO RECOMENDACIONES MEDICAS BOT.docx"):
+        doc_word = Document("FORMATO RECOMENDACIONES MEDICAS BOT.docx")
+    else:
+        doc_word = Document()
+    
+    consecutivo_final = datos_trabajador.get("consecutivo", "")
+    if not consecutivo_final:
+        g_url = obtener_config("google_sheets_url")
+        if g_url:
+            try:
+                r = requests.get(g_url, params={
+                    "name": datos_trabajador["nombre"], 
+                    "cargo": datos_trabajador["cargo"], 
+                    "examen": datos_trabajador["tipo_examen"], 
+                    "fecha": fecha.strftime("%Y-%m-%d")
+                }, timeout=10)
+                consecutivo_final = r.json().get("consecutive") if r.json().get("status") == "success" else incrementar_consecutivo_local()
+            except: consecutivo_final = incrementar_consecutivo_local()
+        else: consecutivo_final = incrementar_consecutivo_local()
+        datos_trabajador["consecutivo"] = consecutivo_final
 
+    replacements = {
+        "{{NUMERO DE CONSECUTIVO}}": consecutivo_final, 
+        "{{TIPO DE EXAMEN}}": datos_trabajador["tipo_examen"].upper(),
+        "{{LUGAR}}": lugar, 
+        "{{FECHA HOY}}": fecha.strftime("%d de %B de %Y"),
+        "{{NOMBRE DE LA PERSONA}}": datos_trabajador["nombre"], 
+        "{{CARGO DE LA PERSONA}}": datos_trabajador["cargo"],
+        "{{Observaciones}}": datos_trabajador["observaciones"]
+    }
+
+    for table in doc_word.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for k, v in replacements.items():
+                        if k in p.text: p.text = p.text.replace(k, v)
+                    aplicar_negrita_dinamica_cuerpo(p, datos_trabajador["tipo_examen"])
+                replace_placeholder_with_bullets(cell, "{{LISTA DE EXAMENES REALIZADOS}}", datos_trabajador["examenes_lista"])
+                replace_placeholder_with_bullets(cell, "{{LISTA DE EXAMENES REALIZADOS", datos_trabajador["examenes_lista"])
+                replace_placeholder_with_bullets(cell, "{{Recomendaciones médicas}}", datos_trabajador["recomendaciones_lista"])
+                procesar_remisiones_en_celda(cell, datos_trabajador["remisiones"])
+                
+                idx_victor = -1
+                for idx, p in enumerate(cell.paragraphs):
+                    if "VÍCTOR ALONSO MORENO CASAS" in p.text:
+                        idx_victor = idx
+                        break
+                if idx_victor != -1 and firma_file:
+                    p_firma = cell.paragraphs[idx_victor - 2]
+                    p_firma.text = ""
+                    p_firma.add_run().add_picture(firma_file, width=Inches(2.2))
+
+    b_io = io.BytesIO()
+    doc_word.save(b_io)
+    return b_io.getvalue(), consecutivo_final
+
+# --- VISTA STREAMLIT ---
+st.markdown("<div class='header-banner'><h1>🩺 Portal de Control SST - JER S.A.</h1><p>Generación de Comunicaciones con Negrita Dinámica, Google Sheets y Firma Digital</p></div>", unsafe_allow_html=True)
+
+# BARRA LATERAL (CONFIGURACIÓN)
+st.sidebar.markdown(f"<h3 style='color:#60a5fa;'>👤 Perfil Activo</h3>", unsafe_allow_html=True)
+st.sidebar.markdown(f"<div class='metric-card'><strong>Usuario:</strong> {st.session_state.username}</div>", unsafe_allow_html=True)
+if st.sidebar.button("Cerrar Sesión"):
+    st.session_state.logged_in = False
+    st.session_state.username = ""
+    st.session_state.documentos = {}
+    st.session_state.textos_raw = {}
+    st.session_state.export_bytes = None
+    st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔗 Configuración de Nube Sheets")
+g_url_guardada = obtener_config("google_sheets_url")
+g_url_input = st.sidebar.text_input("URL de Google Apps Script:", value=g_url_guardada, type="password")
+if st.sidebar.button("Guardar Conexión"):
+    guardar_config("google_sheets_url", g_url_input)
+    st.sidebar.success("¡Enlace guardado!")
+    st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("📋 Documentación Base")
+template_uploaded = st.sidebar.file_uploader("Formato de Word Institucional (.docx)", type=["docx"])
+firma_file = st.sidebar.file_uploader("Estampa de Firma Autorizada (.png / .jpg)", type=["png", "jpg"])
+
+# DIVISION EN COLUMNAS
 col_izq, col_der = st.columns([1, 1.2])
 
 with col_izq:
-    st.markdown("<h3 style='color:#60a5fa;'>📂 1. Carga de Documentos</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='color:#60a5fa;'>📂 1. Carga de Documentos PDF</h3>", unsafe_allow_html=True)
     pdfs_subidos = st.file_uploader("Carga los archivos PDF:", type="pdf", accept_multiple_files=True)
     
     if pdfs_subidos:
@@ -506,12 +657,19 @@ with col_izq:
                     texto_raw = "".join([page.extract_text() + "\n" for page in p_file.pages])
                 st.session_state.documentos[pdf.name] = analizar_pdf_inteligente(texto_raw)
         
+        st.markdown(f"""
+            <div style='display:flex; gap:10px; margin-top:15px;'>
+                <div class='metric-card' style='flex:1;'><strong>PDFs Leídos</strong><br><span style='font-size:20px; font-weight:700; color:#60a5fa;'>{len(st.session_state.documentos)}</span></div>
+                <div class='metric-card' style='flex:1;'><strong>Nube Sheets</strong><br><span style='font-size:14px; font-weight:600; color:#4ade80;'>{'Conectado' if g_url_guardada else 'Modo Local'}</span></div>
+            </div>
+        """, unsafe_allow_html=True)
+        
         archivo_seleccionado = st.selectbox("🎯 Selecciona Colaborador:", list(st.session_state.documentos.keys()))
     else:
         archivo_seleccionado = None
 
 with col_der:
-    st.markdown("<h3 style='color:#60a5fa;'>📋 2. Editor del Trabajador</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='color:#60a5fa;'>📋 2. Editor del Trabajador Seleccionado</h3>", unsafe_allow_html=True)
     if archivo_seleccionado:
         doc_actual = st.session_state.documentos[archivo_seleccionado]
         
@@ -525,10 +683,10 @@ with col_der:
         with col_p1: nombre_persona = st.text_input("Trabajador:", value=doc_actual["nombre"])
         with col_p2: cargo_persona = st.text_input("Cargo:", value=doc_actual["cargo"])
         
-        examenes_realizados = st.text_area("Exámenes (Líneas):", value="\n".join(doc_actual["examenes_lista"]))
-        recom_medicas = st.text_area("Recomendaciones por Examen:", value="\n".join(doc_actual["recomendaciones_lista"]))
+        examenes_realizados = st.text_area("Exámenes Realizados:", value="\n".join(doc_actual["examenes_lista"]))
+        recom_medicas = st.text_area("Recomendaciones por Examen:", value="\n".join(doc_actual["recomendaciones_lista"]), height=130)
         observaciones = st.text_area("Observaciones:", value=doc_actual["observaciones"])
-        remisiones = st.text_input("Remisiones:", value=doc_actual["remisiones"])
+        remisiones = st.text_input("Remisiones (Escribe 'No' para marcarlo negativo):", value=doc_actual["remisiones"])
 
         doc_actual.update({
             "nombre": nombre_persona, "cargo": cargo_persona, "tipo_examen": tipo_examen,
@@ -537,48 +695,46 @@ with col_der:
             "observaciones": observaciones, "remisiones": remisiones
         })
 
-        # --- SELECTOR DE FORMATO DE SALIDA ---
         st.markdown("---")
         formato_salida = st.radio("⚡ Elige formato de generación:", ["Microsoft Word (.docx)", "Impresión de Respaldo Web (HTML/PDF)"], horizontal=True)
         
-        if st.button("✨ Procesar y Reservar"):
-            consecutivo_final = doc_actual.get("consecutivo", "")
-            if not consecutivo_final:
-                g_url = obtener_config("google_sheets_url")
-                if g_url:
-                    try:
-                        r = requests.get(g_url, params={"name": nombre_persona, "cargo": cargo_persona, "examen": tipo_examen, "fecha": fecha.strftime("%Y-%m-%d")}, timeout=10)
-                        consecutivo_final = r.json().get("consecutive") if r.json().get("status") == "success" else incrementar_consecutivo_local()
-                    except: consecutivo_final = incrementar_consecutivo_local()
-                else: consecutivo_final = incrementar_consecutivo_local()
-                doc_actual["consecutivo"] = consecutivo_final
-
-            if "Word" in formato_salida:
-                doc_word = Document("FORMATO RECOMENDACIONES MEDICAS BOT.docx") if os.path.exists("FORMATO RECOMENDACIONES MEDICAS BOT.docx") else Document()
-                replacements = {
-                    "{{NUMERO DE CONSECUTIVO}}": consecutivo_final, "{{TIPO DE EXAMEN}}": tipo_examen.upper(),
-                    "{{LUGAR}}": lugar, "{{FECHA HOY}}": fecha.strftime("%d de %B de %Y"),
-                    "{{NOMBRE DE LA PERSONA}}": nombre_persona, "{{CARGO DE LA PERSONA}}": cargo_persona,
-                    "{{Observaciones}}": observaciones
-                }
-                for table in doc_word.tables:
-                    for row in table.rows:
-                        for cell in row.cells:
-                            for p in cell.paragraphs:
-                                for k, v in replacements.items():
-                                    if k in p.text: p.text = p.text.replace(k, v)
-                                aplicar_negrita_dinamica_cuerpo(p, tipo_examen)
-                            replace_placeholder_with_bullets(cell, "{{LISTA DE EXAMENES REALIZADOS}}", doc_actual["examenes_lista"])
-                            replace_placeholder_with_bullets(cell, "{{Recomendaciones médicas}}", doc_actual["recomendaciones_lista"])
-                            procesar_remisiones_en_celda(cell, remisiones)
-                
-                b_io = io.BytesIO()
-                doc_word.save(b_io)
-                st.session_state.export_bytes = b_io.getvalue()
-                st.success(f"🟢 Archivo Word Listo (Consecutivo: {consecutivo_final})")
-                st.download_button("📥 Descargar Word (.docx)", data=st.session_state.export_bytes, file_name=f"Informe_{nombre_persona.replace(' ','_')}.docx")
-            else:
-                html_out = generar_html_vista(doc_actual, consecutivo_final, lugar, fecha)
-                st.session_state.export_bytes = html_out.encode('utf-8')
-                st.success(f"🟢 Vista de Impresión Lista (Consecutivo: {consecutivo_final})")
-                st.download_button("📥 Descargar Documento Imprimible (.html)", data=st.session_state.export_bytes, file_name=f"Informe_{nombre_persona.replace(' ','_')}.html")
+        col_act1, col_gen2 = st.columns(2)
+        
+        with col_act1:
+            if st.button("✨ Procesar y Descargar este Colaborador"):
+                with st.spinner("Procesando documento..."):
+                    if "Word" in formato_salida:
+                        bytes_word, consec_num = generar_word_unico(doc_actual, lugar, fecha, template_uploaded, firma_file)
+                        if bytes_word:
+                            st.success(f"🟢 Guardado en Sheets (Consecutivo: {consec_num})")
+                            st.download_button("📥 Descargar Word (.docx)", data=bytes_word, file_name=f"Informe_{nombre_persona.replace(' ','_')}.docx")
+                    else:
+                        _, consec_num = generar_word_unico(doc_actual, lugar, fecha, template_uploaded, None)
+                        html_out = generar_html_vista(doc_actual, consec_num, lugar, fecha)
+                        st.success(f"🟢 Guardado en Sheets (Consecutivo: {consec_num})")
+                        st.download_button("📥 Descargar Documento Imprimible (.html)", data=html_out.encode('utf-8'), file_name=f"Informe_{nombre_persona.replace(' ','_')}.html")
+                        
+        with col_gen2:
+            if len(st.session_state.documentos) > 1:
+                if st.button("📦 Generar TODOS los Colaboradores (ZIP)"):
+                    with st.spinner("Conectando en lote con la nube..."):
+                        zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                            for filename, datos_trab in st.session_state.documentos.items():
+                                if "Word" in formato_salida:
+                                    bytes_word, consec_num = generar_word_unico(datos_trab, lugar, fecha, template_uploaded, firma_file)
+                                    if bytes_word:
+                                        zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.docx", bytes_word)
+                                else:
+                                    _, consec_num = generar_word_unico(datos_trab, lugar, fecha, template_uploaded, None)
+                                    html_out = generar_html_vista(datos_trab, consec_num, lugar, fecha)
+                                    zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.html", html_out.encode('utf-8'))
+                                    
+                        zip_buffer.seek(0)
+                        st.session_state.zip_bytes = zip_buffer.getvalue()
+                        st.success("🎉 ZIP de lote masivo compilado con éxito.")
+                        
+                if st.session_state.zip_bytes:
+                    st.download_button("📥 Descargar ZIP Masivo", data=st.session_state.zip_bytes, file_name=f"Lote_SST_JER_SA_{fecha.strftime('%Y%m%d')}.zip", mime="application/zip")
+    else:
+        st.markdown("<div style='text-align:center; padding: 40px; color:#64748b;'><h3>👋 Tablero Listo</h3><p>Por favor, arrastra tus archivos PDF en la sección izquierda para activar el procesamiento automático.</p></div>", unsafe_allow_html=True)
