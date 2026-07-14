@@ -80,7 +80,7 @@ def actualizar_contrasena(user, old_pwd, new_pwd):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute("SELECT contrasena FROM usuarios WHERE usuario = ?", (user.lower().strip(),))
-    resultado = r = c.fetchone()
+    resultado = c.fetchone()
     if resultado and resultado[0] == hash_password(old_pwd):
         c.execute("UPDATE usuarios SET contrasena = ? WHERE usuario = ?", (hash_password(new_pwd), user.lower().strip()))
         conn.commit()
@@ -327,14 +327,16 @@ def analizar_pdf_inteligente(texto):
                 seccion.append(l.strip())
         return "\n".join(seccion).strip()
 
+    # Extraer observaciones normales
     datos["observaciones"] = a_caso_oracion(extraer_seccion(texto,
         ["OBSERVACIONES:", "OBSERVACION:", "OBSERVACIONES"],
         ["RECOMENDACIONES", "REMISIONES", "VIGILANCIA", "FIRMA", "ATENTAMENTE"]
     ))
 
+    # --- EXTRACCIÓN DE REMISIONES ESTRICTA DESDE LA TABLA DEL PROVEEDOR ---
     datos["remisiones"] = a_caso_oracion(extraer_seccion(texto,
-        ["REMISIONES:", "REMISION:", "REMISIONES", "REMITIDO A:"],
-        ["RECOMENDACIONES", "OBSERVACIONES", "VIGILANCIA", "FIRMA", "ATENTAMENTE"]
+        ["INFORMACION DE REMISIONES", "INFORMACIÓN DE REMISIONES"],
+        ["RECOMENDACIONES", "OBSERVACIONES", "VIGILANCIA", "FIRMA", "ATENTAMENTE", "DIAGNOSTICOS", "DIAGNÓSTICOS"]
     ))
 
     return datos
@@ -372,7 +374,6 @@ def replace_placeholder_with_bullets(cell, placeholder, items_list):
                 p.text = "Ninguno."
                 return
             
-            # Intentamos usar estilo List Bullet, si no existe usamos fallback manual
             try:
                 p.style = 'List Bullet'
                 p.add_run(items_list[0])
@@ -525,7 +526,7 @@ with col_der:
         
         remisiones = st.text_area("Remisiones (Escribe 'Ninguna' o déjalo vacío para ocultarlo de la carta):", value=doc_actual["remisiones"], key=f"rem_{archivo_seleccionado}")
 
-        # Guardar cambios en memoria aplicando de forma preventiva la función "Caso Oración"
+        # Guardar cambios en memoria en tiempo real
         doc_actual["nombre"] = nombre_persona
         doc_actual["cargo"] = cargo_persona
         doc_actual["tipo_examen"] = tipo_examen
@@ -599,7 +600,7 @@ with col_der:
                         replace_placeholder_with_bullets(cell, "{{LISTA DE EXAMENES REALIZADOS}}", datos_trabajador["examenes_lista"])
                         replace_placeholder_with_bullets(cell, "{{LISTA DE EXAMENES REALIZADOS", datos_trabajador["examenes_lista"])
                         
-                        # 3. Procesamiento Inteligente de Remisiones
+                        # 3. Procesamiento Inteligente de Remisiones (Habilitar Listas o Borrar la Sección)
                         procesar_remisiones_en_celda(cell, datos_trabajador["remisiones"])
                         
                         # 4. Estampado de Firma Autorizada
