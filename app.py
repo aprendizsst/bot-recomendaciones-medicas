@@ -190,15 +190,11 @@ if not st.session_state.logged_in:
 def a_caso_oracion(texto):
     if not texto: 
         return ""
-    # Convertimos todo el bloque a minúsculas
     texto_min = texto.lower().strip()
     
-    # Capitalizar la primera letra después de un punto, signo de exclamación, interrogación, o un salto de línea
     def capitalizar_match(match):
         return match.group(1) + match.group(2).upper()
     
-    # Regex inteligente que busca el inicio de cadena (^) o delimitadores de oración seguidos de espacios opcionales
-    # o saltos de línea, y captura la primera letra del abecedario español (incluyendo acentos y la ñ)
     texto_formateado = re.sub(r'(^|[.!?]\s+|\n+)([a-zñáéíóúü])', capitalizar_match, texto_min)
     return texto_formateado
 
@@ -217,7 +213,6 @@ def limpiar_campo(texto):
     partes = re.split(exclusiones, texto, flags=re.IGNORECASE)
     texto_limpio = partes[0]
     texto_limpio = re.sub(r'[:\-,_]+', '', texto_limpio)
-    # Los nombres propios o cargos los dejamos en formato Título (Ej: "Juan Perez")
     return texto_limpio.strip().title()
 
 def analizar_pdf_inteligente(texto):
@@ -228,15 +223,12 @@ def analizar_pdf_inteligente(texto):
     }
     if not texto: return datos
 
-    # 1. Nombre
     m_nom = re.search(r'(?:Nombre|Paciente|Colaborador|Trabajador):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_nom: datos["nombre"] = limpiar_campo(m_nom.group(1))
 
-    # 2. Cargo
     m_car = re.search(r'(?:Cargo|Ocupación|Ocupacion|Puesto):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_car: datos["cargo"] = limpiar_campo(m_car.group(1))
 
-    # 3. Tipo de Examen
     m_tipo = re.search(r'(?:Tipo de Examen|Concepto|Evaluación|Evaluacion|Motivo|Clase de Examen):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_tipo: 
         datos["tipo_examen"] = limpiar_campo(m_tipo.group(1)).upper()
@@ -246,7 +238,6 @@ def analizar_pdf_inteligente(texto):
                 datos["tipo_examen"] = palabra
                 break
 
-    # --- MAPA DE EXÁMENES CLAVE ---
     EXAMS_MAP = {
         "AUDIOMETRIA DE TONOS": "Audiometría",
         "AUDIOMETRIA": "Audiometría",
@@ -295,7 +286,6 @@ def analizar_pdf_inteligente(texto):
                     p_clean = p.strip(" .-_/()[]")
                     if p_clean and len(p_clean) > 3:
                         if p_clean.upper() not in status_exclusions and p_clean.upper() != "SST":
-                            # Guardamos la recomendación formateada en caso oración de una vez
                             recomendaciones_detectadas.append(a_caso_oracion(p_clean))
                             
                             p_upper = p_clean.upper()
@@ -333,7 +323,6 @@ def analizar_pdf_inteligente(texto):
                 seccion.append(l.strip())
         return "\n".join(seccion).strip()
 
-    # Extraemos y aplicamos formato Caso Oración
     datos["observaciones"] = a_caso_oracion(extraer_seccion(texto,
         ["OBSERVACIONES:", "OBSERVACION:", "OBSERVACIONES"],
         ["RECOMENDACIONES", "REMISIONES", "VIGILANCIA", "FIRMA", "ATENTAMENTE"]
@@ -397,26 +386,23 @@ def procesar_remisiones_en_celda(cell, remisiones_text):
     for p in cell.paragraphs:
         if "{{Remisiones}}" in p.text:
             if es_vacio_o_negativo(remisiones_text):
-                p.text = ""  # Se elimina la sección "remisiones: {{Remisiones}}" de forma limpia
+                p.text = ""
                 return
             else:
                 p.text = ""
-                run = p.add_run("remisiones:")[cite: 2]
+                run = p.add_run("remisiones:")
                 run.bold = True
                 
-                # Dividimos las remisiones por comas, saltos de línea o puntos y coma
                 remisiones_lista = []
                 for r in re.split(r'\n|,|;', remisiones_text):
                     r_clean = r.strip(" .-_/*")
                     if r_clean and not es_vacio_o_negativo(r_clean):
-                        # Las remisiones se guardan con formato de Caso Oración
                         remisiones_lista.append(a_caso_oracion(r_clean))
                 
                 if not remisiones_lista:
                     p.text = ""
                     return
                 
-                # Creamos el listado de viñetas justo debajo
                 current_p = p
                 for item in remisiones_lista:
                     new_p = OxmlElement('w:p')
@@ -432,7 +418,7 @@ def cargar_plantilla_base(archivo_cargado):
     if archivo_cargado:
         return Document(archivo_cargado)
     elif os.path.exists("FORMATO RECOMENDACIONES MEDICAS BOT.docx"):
-        return Document("FORMATO RECOMENDACIONES MEDICAS BOT.docx")[cite: 2]
+        return Document("FORMATO RECOMENDACIONES MEDICAS BOT.docx")
     return None
 
 # --- BARRA LATERAL ---
@@ -500,31 +486,30 @@ with col_der:
         
         col_f1, col_f2 = st.columns(2)
         with col_f1:
-            lugar = st.text_input("Lugar de Expedición:", value="Tunja", key=f"lugar_{archivo_seleccionado}")[cite: 2]
+            lugar = st.text_input("Lugar de Expedición:", value="Tunja", key=f"lugar_{archivo_seleccionado}")
         with col_f2:
-            fecha = st.date_input("Fecha de la Carta:", value=datetime.date(2026, 7, 14), key=f"fecha_{archivo_seleccionado}")[cite: 2]
+            fecha = st.date_input("Fecha de la Carta:", value=datetime.date(2026, 7, 14), key=f"fecha_{archivo_seleccionado}")
 
-        tipo_examen = st.text_input("Tipo de Examen (ASUNTO):", value=doc_actual["tipo_examen"].upper(), key=f"tipo_{archivo_seleccionado}")[cite: 2]
+        tipo_examen = st.text_input("Tipo de Examen (ASUNTO):", value=doc_actual["tipo_examen"].upper(), key=f"tipo_{archivo_seleccionado}")
         
         col_p1, col_p2 = st.columns(2)
         with col_p1:
-            nombre_persona = st.text_input("Nombre del Trabajador:", value=doc_actual["nombre"], key=f"nombre_{archivo_seleccionado}")[cite: 2]
+            nombre_persona = st.text_input("Nombre del Trabajador:", value=doc_actual["nombre"], key=f"nombre_{archivo_seleccionado}")
         with col_p2:
-            cargo_persona = st.text_input("Cargo del Trabajador:", value=doc_actual["cargo"], key=f"cargo_{archivo_seleccionado}")[cite: 2]
+            cargo_persona = st.text_input("Cargo del Trabajador:", value=doc_actual["cargo"], key=f"cargo_{archivo_seleccionado}")
             
         examenes_unificados = "\n".join(doc_actual["examenes_lista"])
-        examenes_realizados = st.text_area("Exámenes Realizados (Uno por línea para viñetas en Word):", value=examenes_unificados, key=f"ex_{archivo_seleccionado}", height=120)[cite: 2]
+        examenes_realizados = st.text_area("Exámenes Realizados (Uno por línea para viñetas en Word):", value=examenes_unificados, key=f"ex_{archivo_seleccionado}", height=120)
         
-        # Las recomendaciones se muestran en el editor formateadas automáticamente con la primera letra en mayúscula
         recom_unificadas = "; ".join(doc_actual["recomendaciones_lista"])
-        recom_medicas = st.text_area("Recomendaciones Médicas:", value=recom_unificadas, key=f"recom_{archivo_seleccionado}")[cite: 2]
+        recom_medicas = st.text_area("Recomendaciones Médicas:", value=recom_unificadas, key=f"recom_{archivo_seleccionado}")
         
         vigilancia_unificada = "; ".join(doc_actual["vigilancia_lista"])
-        vigilancia = st.text_area("Programa de Vigilancia Epidemiológica (PVE):", value=vigilancia_unificada, key=f"vig_{archivo_seleccionado}")[cite: 2]
+        vigilancia = st.text_area("Programa de Vigilancia Epidemiológica (PVE):", value=vigilancia_unificada, key=f"vig_{archivo_seleccionado}")
         
-        observaciones = st.text_area("Observaciones:", value=doc_actual["observaciones"], key=f"obs_{archivo_seleccionado}")[cite: 2]
+        observaciones = st.text_area("Observaciones:", value=doc_actual["observaciones"], key=f"obs_{archivo_seleccionado}")
         
-        remisiones = st.text_area("Remisiones (Escribe 'Ninguna' o déjalo vacío para ocultarlo de la carta):", value=doc_actual["remisiones"], key=f"rem_{archivo_seleccionado}")[cite: 2]
+        remisiones = st.text_area("Remisiones (Escribe 'Ninguna' o déjalo vacío para ocultarlo de la carta):", value=doc_actual["remisiones"], key=f"rem_{archivo_seleccionado}")
 
         # Guardar cambios en memoria aplicando de forma preventiva la función "Caso Oración"
         doc_actual["nombre"] = nombre_persona
@@ -578,17 +563,17 @@ with col_der:
             # Diccionario de Reemplazos Simples de Texto con validación de Caso Oración final
             replacements = {
                 "{{NUMERO DE CONSECUTIVO}}": consecutivo_final,
-                "{{TIPO DE EXAMEN}}": datos_trabajador["tipo_examen"].upper(),[cite: 2]
-                "{{LUGAR}}": lugar,[cite: 2]
-                "{{FECHA HOY}}": fecha_formateada,[cite: 2]
-                "{{NOMBRE DE LA PERSONA}}": datos_trabajador["nombre"],[cite: 2]
-                "{{CARGO DE LA PERSONA}}": datos_trabajador["cargo"],[cite: 2]
-                "{{Recomendaciones médicas}}": a_caso_oracion(datos_trabajador["recomendaciones"]) if datos_trabajador["recomendaciones"] else "No registra.",[cite: 2]
-                "{{Programa de vigilancia epidemiológica}}": a_caso_oracion(datos_trabajador["vigilancia"]) if datos_trabajador["vigilancia"] else "Ninguno.",[cite: 2]
-                "{{Observaciones}}": a_caso_oracion(datos_trabajador["observaciones"]) if datos_trabajador["observaciones"] else "Ninguna."[cite: 2]
+                "{{TIPO DE EXAMEN}}": datos_trabajador["tipo_examen"].upper(),
+                "{{LUGAR}}": lugar,
+                "{{FECHA HOY}}": fecha_formateada,
+                "{{NOMBRE DE LA PERSONA}}": datos_trabajador["nombre"],
+                "{{CARGO DE LA PERSONA}}": datos_trabajador["cargo"],
+                "{{Recomendaciones médicas}}": a_caso_oracion(datos_trabajador["recomendaciones"]) if datos_trabajador["recomendaciones"] else "No registra.",
+                "{{Programa de vigilancia epidemiológica}}": a_caso_oracion(datos_trabajador["vigilancia"]) if datos_trabajador["vigilancia"] else "Ninguno.",
+                "{{Observaciones}}": a_caso_oracion(datos_trabajador["observaciones"]) if datos_trabajador["observaciones"] else "Ninguna."
             }
 
-            for table in doc_word.tables:[cite: 2]
+            for table in doc_word.tables:
                 for row in table.rows:
                     for cell in row.cells:
                         # 1. Reemplazo de marcadores normales
@@ -603,10 +588,10 @@ with col_der:
                         # 3. Procesamiento Inteligente de Remisiones (Habilitar Listas o Borrar la Sección)
                         procesar_remisiones_en_celda(cell, datos_trabajador["remisiones"])
                         
-                        # 4. Estampado de Firma Autorizada[cite: 2]
+                        # 4. Estampado de Firma Autorizada
                         idx_victor = -1
                         for idx, p in enumerate(cell.paragraphs):
-                            if "VÍCTOR ALONSO MORENO CASAS" in p.text:[cite: 2]
+                            if "VÍCTOR ALONSO MORENO CASAS" in p.text:
                                 idx_victor = idx
                                 break
                         
