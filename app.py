@@ -221,11 +221,11 @@ if "export_bytes" not in st.session_state:
     st.session_state.export_bytes = None
 if "zip_bytes" not in st.session_state:
     st.session_state.zip_bytes = None
-if "processed_doc" not in st.session_state:  # Almacena el archivo del colaborador actual
+if "processed_doc" not in st.session_state:
     st.session_state.processed_doc = None
-if "prev_colaborador" not in st.session_state:  # Detecta cambio de pestaña para resetear descargas
+if "prev_colaborador" not in st.session_state:
     st.session_state.prev_colaborador = None
-if "document_count" not in st.session_state:  # Detecta cambios en la cantidad de PDFs para el ZIP
+if "document_count" not in st.session_state:
     st.session_state.document_count = 0
 
 # --- PANTALLAS DE ACCESO ---
@@ -236,55 +236,63 @@ if not st.session_state.logged_in:
     
     if not tiene_usuarios():
         st.warning("🆕 Bienvenido. Configura tu cuenta inicial de Administrador.")
-        reg_nombre = st.text_input("Nombre Completo")
-        reg_user = st.text_input("Nombre de Usuario (Login)")
-        reg_pwd = st.text_input("Contraseña", type="password")
-        if st.button("Crear Administrador"):
-            if reg_nombre and reg_user and reg_pwd:
-                if registrar_usuario(reg_user, reg_pwd, reg_nombre):
-                    st.success("¡Administrador creado con éxito!")
-                    st.rerun()
-            else:
-                st.warning("Completa todos los campos.")
+        with st.form("form_registro_inicial"):
+            reg_nombre = st.text_input("Nombre Completo", key="init_admin_fullname")
+            reg_user = st.text_input("Nombre de Usuario (Login)", key="init_admin_username")
+            reg_pwd = st.text_input("Contraseña", type="password", key="init_admin_password")
+            submit_init = st.form_submit_button("Crear Administrador")
+            if submit_init:
+                if reg_nombre and reg_user and reg_pwd:
+                    if registrar_usuario(reg_user, reg_pwd, reg_nombre):
+                        st.success("¡Administrador creado con éxito!")
+                        st.rerun()
+                else:
+                    st.warning("Completa todos los campos.")
     else:
-        opcion_acceso = st.radio("Elige una acción:", ["Iniciar Sesión", "Crear Nueva Cuenta", "Actualizar Contraseña"], horizontal=True)
+        opcion_acceso = st.radio("Elige una acción:", ["Iniciar Sesión", "Crear Nueva Cuenta", "Actualizar Contraseña"], horizontal=True, key="sistema_tabs_acceso")
         st.markdown("<br>", unsafe_allow_html=True)
         
         if opcion_acceso == "Iniciar Sesión":
-            log_user = st.text_input("Usuario")
-            log_pwd = st.text_input("Contraseña", type="password")
-            if st.button("Ingresar al Sistema"):
-                nombre_usuario = verificar_usuario(log_user, log_pwd)
-                if nombre_usuario:
-                    st.session_state.logged_in = True
-                    st.session_state.username = nombre_usuario
-                    st.rerun()
-                else:
-                    st.error("❌ Credenciales incorrectas.")
-                    
+            with st.form("form_inicio_sesion"):
+                log_user = st.text_input("Usuario", key="login_username_field")
+                log_pwd = st.text_input("Contraseña", type="password", key="login_password_field")
+                submit_login = st.form_submit_button("Ingresar al Sistema")
+                if submit_login:
+                    nombre_usuario = verificar_usuario(log_user, log_pwd)
+                    if nombre_usuario:
+                        st.session_state.logged_in = True
+                        st.session_state.username = nombre_usuario
+                        st.rerun()
+                    else:
+                        st.error("❌ Credenciales incorrectas.")
+                        
         elif opcion_acceso == "Crear Nueva Cuenta":
-            reg_nombre = st.text_input("Nombre Completo")
-            reg_user = st.text_input("Nombre de Usuario")
-            reg_pwd = st.text_input("Contraseña", type="password")
-            if st.button("Registrar Cuenta"):
-                if reg_nombre and reg_user and reg_pwd:
-                    if registrar_usuario(reg_user, reg_pwd, reg_nombre):
-                        st.success("🎉 Cuenta creada. Cambia a 'Iniciar Sesión'.")
+            with st.form("form_crear_cuenta"):
+                reg_nombre = st.text_input("Nombre Completo", key="register_fullname_field")
+                reg_user = st.text_input("Nombre de Usuario", key="register_username_field")
+                reg_pwd = st.text_input("Contraseña", type="password", key="register_password_field")
+                submit_reg = st.form_submit_button("Registrar Cuenta")
+                if submit_reg:
+                    if reg_nombre and reg_user and reg_pwd:
+                        if registrar_usuario(reg_user, reg_pwd, reg_nombre):
+                            st.success("🎉 Cuenta creada. Cambia a 'Iniciar Sesión'.")
+                        else:
+                            st.error("❌ El usuario ya existe.")
                     else:
-                        st.error("❌ El usuario ya existe.")
-                else:
-                    st.warning("Completa todos los campos.")
-                    
+                        st.warning("Completa todos los campos.")
+                        
         elif opcion_acceso == "Actualizar Contraseña":
-            upd_user = st.text_input("Usuario")
-            upd_old_pwd = st.text_input("Contraseña Actual", type="password")
-            upd_new_pwd = st.text_input("Nueva Contraseña", type="password")
-            if st.button("Cambiar Contraseña"):
-                if upd_user and upd_old_pwd and upd_new_pwd:
-                    if actualizar_contrasena(upd_user, upd_old_pwd, upd_new_pwd):
-                        st.success("✅ Contraseña actualizada con éxito.")
-                    else:
-                        st.error("❌ Error en los datos proporcionados.")
+            with st.form("form_update_password"):
+                upd_user = st.text_input("Usuario", key="update_username_field")
+                upd_old_pwd = st.text_input("Contraseña Actual", type="password", key="update_old_password_field")
+                upd_new_pwd = st.text_input("Nueva Contraseña", type="password", key="update_new_password_field")
+                submit_upd = st.form_submit_button("Cambiar Contraseña")
+                if submit_upd:
+                    if upd_user and upd_old_pwd and upd_new_pwd:
+                        if actualizar_contrasena(upd_user, upd_old_pwd, upd_new_pwd):
+                            st.success("✅ Contraseña actualizada con éxito.")
+                        else:
+                            st.error("❌ Error en los datos proporcionados.")
                         
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
@@ -315,11 +323,9 @@ def es_vacio_o_negativo(texto):
     if not texto: return True
     return texto.strip().lower().strip(" .-_/ '\"") in ["no", "ninguna", "ninguno", "no registra", "sin remisiones", "normal", "n/a", "sin remisión"]
 
-# --- FILTRADO INTELIGENTE DE RUIDO DE ESTADOS CLÍNICOS ---
 def es_vacio_o_estado(texto):
     if not texto: return True
     t_clean = texto.strip().upper()
-    
     t_clean_norm = re.sub(r'[^A-ZÁÉÍÓÚÑ\s]', '', t_clean).strip()
     t_clean_norm = re.sub(r'\s+', ' ', t_clean_norm)
     
@@ -335,7 +341,6 @@ def es_vacio_o_estado(texto):
         return True
     if len(texto.strip()) <= 3:
         return True
-        
     return False
 
 def limpiar_campo(texto):
@@ -473,7 +478,7 @@ def analizar_pdf_inteligente(texto):
     datos["recomendaciones_lista"] = recoms_por_examen
     datos["vigilancia_lista"] = list(pve_detectados)
 
-    # --- EXTRAER PROGRAMA DE VIGILANCIA EN SU PROPIO CAMPO ---
+    # EXTRAER PROGRAMA DE VIGILANCIA EN SU PROPIO CAMPO
     prog_vig = ""
     patron_pve = r'(?:Ingresar al programa de vigilancia epidemiol[oó]gica o programa de prevenci[oó]n y promoci[oó]n)\s*\n?\s*([^\n]+)'
     m_pve = re.search(patron_pve, texto, re.IGNORECASE)
@@ -483,12 +488,6 @@ def analizar_pdf_inteligente(texto):
         prog_vig = prog_vig.strip(" :-,_/.()[]").upper()
     
     datos["vigilancia_programa"] = prog_vig if prog_vig else "NINGUNO"
-
-    def limpiar_linea_columnas(linea):
-        columnas = [col.strip() for col in re.split(r'\s{2,}', linea) if col.strip()]
-        if not columnas: return ""
-        if len(columnas) == 1: return columnas[0]
-        return max(columnas, key=len)
 
     def extraer_seccion_limpia(texto_completo, palabras_inicio, palabras_fin):
         seccion = []
@@ -509,7 +508,6 @@ def analizar_pdf_inteligente(texto):
                 seccion.append(l_limpia)
         return "\n".join([s for s in seccion if s]).strip()
 
-    # Detener observaciones ante la grilla de Vigilancia Epidemiológica
     datos["observaciones"] = a_caso_oracion(extraer_seccion_limpia(
         texto, 
         ["OBSERVACIONES:"], 
@@ -548,7 +546,7 @@ def aplicar_negrita_dinamica_cuerpo(paragraph, tipo_examen):
                 
     paragraph.add_run(")")
 
-# --- MOTOR DE REEMPLAZO QUE PRESERVA LA TIPOGRAFÍA ORIGINAL ---
+# --- MOTOR DE REEMPLAZO QUE PRESERVA FUENTES CORPORATIVAS AL 100% ---
 def replace_placeholder_in_paragraph_runs(paragraph, placeholder, value):
     if placeholder not in paragraph.text:
         return False
@@ -587,7 +585,7 @@ def replace_placeholder_in_paragraph_runs(paragraph, placeholder, value):
             new_run.font.color.rgb = color
     return True
 
-# --- INSERCIÓN DE VIÑETAS PRESERVANDO LA TIPOGRAFÍA ORIGINAL ---
+# --- INSERCIÓN DE LISTAS CON FORMATO DEFENSIVO DE UNA SOLA HOJA ---
 def insert_bullets_in_placeholder(parent_container, paragraph, items_list):
     if not paragraph.runs:
         font_name = "Arial"
@@ -602,6 +600,9 @@ def insert_bullets_in_placeholder(parent_container, paragraph, items_list):
         color = first_run.font.color.rgb if first_run.font.color else None
 
     paragraph.text = ""
+    paragraph.paragraph_format.space_after = Pt(2)   # AJUSTE: Minimizar espacio vertical
+    paragraph.paragraph_format.space_before = Pt(0)
+    
     if not items_list:
         run = paragraph.add_run("Ninguno.")
         run.font.name = font_name
@@ -624,8 +625,8 @@ def insert_bullets_in_placeholder(parent_container, paragraph, items_list):
         new_para = Paragraph(new_p_element, parent_container)
         new_para.paragraph_format.alignment = paragraph.paragraph_format.alignment
         new_para.paragraph_format.line_spacing = paragraph.paragraph_format.line_spacing
-        new_para.paragraph_format.space_after = paragraph.paragraph_format.space_after
-        new_para.paragraph_format.space_before = paragraph.paragraph_format.space_before
+        new_para.paragraph_format.space_after = Pt(2)    # AJUSTE: Mantener lista unida sin desbordes
+        new_para.paragraph_format.space_before = Pt(0)
         new_para.paragraph_format.left_indent = paragraph.paragraph_format.left_indent or Inches(0.25)
         
         run_new = new_para.add_run("• " + item)
@@ -649,6 +650,9 @@ def insert_recommendations_in_placeholder(parent_container, paragraph, recom_lis
         color = None
 
     paragraph.text = ""
+    paragraph.paragraph_format.space_after = Pt(2)
+    paragraph.paragraph_format.space_before = Pt(0)
+    
     run_lbl = paragraph.add_run("Recomendaciones: ")
     run_lbl.bold = True
     run_lbl.font.name = font_name
@@ -675,6 +679,8 @@ def insert_recommendations_in_placeholder(parent_container, paragraph, recom_lis
         new_para = Paragraph(new_p_element, parent_container)
         new_para.paragraph_format.alignment = paragraph.paragraph_format.alignment
         new_para.paragraph_format.line_spacing = paragraph.paragraph_format.line_spacing
+        new_para.paragraph_format.space_after = Pt(2)    # AJUSTE: Evitar saltos de página
+        new_para.paragraph_format.space_before = Pt(0)
         new_para.paragraph_format.left_indent = Inches(0.25)
         
         run_new = new_para.add_run("• " + item)
@@ -684,7 +690,6 @@ def insert_recommendations_in_placeholder(parent_container, paragraph, recom_lis
         
         current_p = new_para
 
-# --- INSERCIÓN DE OBSERVACIONES Y REMISIONES CON FORMATO ---
 def replace_label_placeholder(paragraph, label_text, placeholder, value):
     if placeholder not in paragraph.text:
         return False
@@ -699,6 +704,9 @@ def replace_label_placeholder(paragraph, label_text, placeholder, value):
         color = None
         
     paragraph.text = ""
+    paragraph.paragraph_format.space_after = Pt(3)   # AJUSTE: Compactación vertical de campos inferiores
+    paragraph.paragraph_format.space_before = Pt(0)
+    
     run_lbl = paragraph.add_run(label_text)
     run_lbl.bold = True
     run_lbl.font.name = font_name
@@ -749,7 +757,6 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
         else: consecutivo_final = incrementar_consecutivo_local()
         datos_trabajador["consecutivo"] = consecutivo_final
 
-    # El placeholder {{Programa de vigilancia epidemiológica}} hereda el diseño del Word
     simple_replacements = {
         "{{NUMERO DE CONSECUTIVO}}": consecutivo_final, 
         "{{TIPO DE EXAMEN}}": datos_trabajador["tipo_examen"].upper(),
@@ -767,11 +774,11 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
         if "{{Recomendaciones médicas}}" in p.text:
             insert_recommendations_in_placeholder(container, p, datos_trabajador["recomendaciones_lista"])
             return True
-        if "{{Observaciones}}" in p.text:
-            replace_label_placeholder(p, "Observaciones: ", "{{Observaciones}}", datos_trabajador["observaciones"])
+        if "{{Observaciones}}".lower() in p.text.lower():
+            replace_label_placeholder(p, "Observaciones: ", p.text, datos_trabajador["observaciones"])
             return True
-        if "{{Remisiones}}" in p.text:
-            replace_label_placeholder(p, "Remisiones: ", "{{Remisiones}}", datos_trabajador["remisiones"])
+        if "{{Remisiones}}".lower() in p.text.lower():
+            replace_label_placeholder(p, "Remisiones: ", p.text, datos_trabajador["remisiones"])
             return True
             
         for k, v in simple_replacements.items():
@@ -780,18 +787,15 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
                 
         aplicar_negrita_dinamica_cuerpo(p, datos_trabajador["tipo_examen"])
 
-    # Escaneo en párrafos raíz del documento
     for p in list(doc_word.paragraphs):
         procesar_parrafo(p, doc_word)
 
-    # Escaneo en tablas
     for table in doc_word.tables:
         for row in table.rows:
             for cell in row.cells:
                 for p in list(cell.paragraphs):
                     procesar_parrafo(p, cell)
                 
-                # Inserción de la firma
                 idx_victor = -1
                 for idx, p in enumerate(cell.paragraphs):
                     if "VÍCTOR ALONSO MORENO CASAS" in p.text:
@@ -801,7 +805,7 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
                     target_idx = max(0, idx_victor - 1)
                     p_firma = cell.paragraphs[target_idx]
                     p_firma.text = ""
-                    p_firma.add_run().add_picture(firma_file, width=Inches(1.8))
+                    p_firma.add_run().add_picture(firma_file, width=Inches(1.6))
 
     b_io = io.BytesIO()
     doc_word.save(b_io)
@@ -815,7 +819,6 @@ def convertir_docx_a_pdf(docx_bytes):
 
     pdf_path = temp_docx_path.replace(".docx", ".pdf")
     
-    # Intento 1: LibreOffice (Entorno de producción como Streamlit Cloud)
     try:
         subprocess.run([
             "libreoffice", "--headless", "--convert-to", "pdf", 
@@ -831,7 +834,6 @@ def convertir_docx_a_pdf(docx_bytes):
     except Exception:
         pass
 
-    # Intento 2: docx2pdf (Línea local de comandos para Windows/macOS)
     try:
         from docx2pdf import convert
         convert(temp_docx_path, pdf_path)
@@ -848,7 +850,6 @@ def convertir_docx_a_pdf(docx_bytes):
         os.unlink(temp_docx_path)
     return None, False
 
-# --- GENERADOR DE HTML ---
 def generar_html_vista(datos, consecutivo_num, lugar, fecha):
     return f"""
     <div style="font-family: Arial, sans-serif; color: #333; padding: 20px; line-height: 1.5; background: white; border: 1px solid #ccc; max-width: 800px; margin: auto;">
@@ -910,7 +911,6 @@ with col_izq:
     pdfs_subidos = st.file_uploader("Carga los archivos PDF:", type="pdf", accept_multiple_files=True)
     
     if pdfs_subidos:
-        # Si la cantidad de archivos cargados cambia, borramos los cachés de lotes para evitar desincronizaciones
         if len(pdfs_subidos) != st.session_state.document_count:
             st.session_state.documentos = {}
             st.session_state.zip_bytes = None
@@ -939,7 +939,6 @@ with col_izq:
 with col_der:
     st.markdown("<h3 style='color:#60a5fa;'>📋 2. Editor del Trabajador Seleccionado</h3>", unsafe_allow_html=True)
     if archivo_seleccionado:
-        # Detectar cambio de colaborador seleccionado para limpiar la memoria de descarga anterior
         if archivo_seleccionado != st.session_state.prev_colaborador:
             st.session_state.processed_doc = None
             st.session_state.prev_colaborador = archivo_seleccionado
@@ -964,18 +963,17 @@ with col_der:
         observaciones = st.text_area("Observaciones:", value=doc_actual["observaciones"])
         remisiones = st.text_input("Remisiones (Escribe 'No' para marcarlo negativo):", value=doc_actual["remisiones"])
 
-        # Detectar modificaciones en caliente de los campos de texto para invalidar descargas obsoletas
         valores_actualizados = {
             "nombre": nombre_persona, "cargo": cargo_persona, "tipo_examen": tipo_examen,
             "examenes_lista": [l.strip() for l in examenes_realizados.split('\n') if l.strip()],
             "recomendaciones_lista": [l.strip() for l in recom_medicas.split('\n') if l.strip()],
-            "observaciones": observaciones, "remisiones": remisiones,
-            "vigilancia_programa": programa_vigilancia
+            "observaciones": observaciones.strip(), "remisiones": remisiones.strip(),
+            "vigilancia_programa": programa_vigilancia.strip()
         }
         
         for clave, valor in valores_actualizados.items():
             if doc_actual.get(clave) != valor:
-                st.session_state.processed_doc = None  # Reset del caché para obligar a procesar de nuevo
+                st.session_state.processed_doc = None
                 doc_actual[clave] = valor
 
         st.markdown("---")
@@ -984,7 +982,6 @@ with col_der:
         col_act1, col_gen2 = st.columns(2)
         
         with col_act1:
-            # Botón de Procesamiento puro (Sin descarga anidada)
             if st.button("✨ Procesar este Colaborador"):
                 with st.spinner("Procesando y registrando documento..."):
                     bytes_word, consec_num = generar_word_unico(doc_actual, lugar, fecha, template_uploaded, firma_file)
@@ -1015,9 +1012,8 @@ with col_der:
                             "filename": f"Informe_{nombre_persona.replace(' ','_')}.html",
                             "mime": "text/html"
                         }
-                st.rerun()  # Rerun limpio para actualizar la interfaz del DOM
+                st.rerun()
             
-            # Botón de Descarga ESTABLE (Fuera del flujo condicional del procesador)
             if st.session_state.processed_doc is not None:
                 doc_info = st.session_state.processed_doc
                 st.success(f"🟢 Guardado con éxito en base (Consecutivo: {doc_info['consec_num']})")
@@ -1030,7 +1026,6 @@ with col_der:
                         
         with col_gen2:
             if len(st.session_state.documentos) > 1:
-                # Botón de Procesamiento de Lote puro
                 if st.button("📦 Procesar TODOS los Colaboradores (ZIP)"):
                     with st.spinner("Compilando lote masivo..."):
                         zip_buffer = io.BytesIO()
@@ -1055,7 +1050,6 @@ with col_der:
                         st.success("🎉 ZIP de lote masivo compilado con éxito.")
                         st.rerun()
                         
-                # Botón de Descarga de Lote ESTABLE
                 if st.session_state.zip_bytes is not None:
                     st.download_button(
                         label="📥 Descargar ZIP Masivo", 
