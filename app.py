@@ -18,78 +18,109 @@ import zipfile
 st.set_page_config(
     page_title="Portal SST - JER S.A.", 
     page_icon="🩺", 
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# --- INYECCIÓN DE CSS AVANZADO PARA INTERFAZ LLAMATIVA Y DINÁMICA ---
+# --- INYECCIÓN DE CSS ESTRICTO PARA CORREGIR CONTRASTE Y COLORES ---
 st.markdown("""
     <style>
-    /* Estilos globales y fuentes */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
-    
-    html, body, [data-testid="stAppViewContainer"] {
-        font-family: 'Inter', sans-serif;
-        background-color: #f4f6f9;
+    /* Fondo global de la aplicación */
+    [data-testid="stAppViewContainer"] {
+        background-color: #f8fafc !important;
     }
     
-    /* Degradado Superior de Bienvenida */
-    .header-banner {
-        background: linear-gradient(135deg, #1f4e79 0%, #2a6f97 100%);
-        padding: 25px;
-        border-radius: 12px;
-        color: white;
-        margin-bottom: 25px;
-        box-shadow: 0 4px 15px rgba(31, 78, 121, 0.2);
-    }
-    
-    /* Contenedor Flotante de Login Estilo Premium */
+    /* CONTROL DE ALTO CONTRASTE PARA LOGIN */
     .login-box {
-        max-width: 460px;
-        margin: 40px auto;
-        padding: 40px;
-        background: #ffffff;
-        border-radius: 16px;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
-        border: 1px solid #eef2f5;
+        max-width: 450px;
+        margin: 60px auto;
+        padding: 35px;
+        background-color: #ffffff !important;
+        border-radius: 14px;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.05);
+        border: 1px solid #e2e8f0;
     }
     
-    /* Personalización Dinámica de Botones */
+    /* Forzar visibilidad de títulos y subtítulos */
+    .login-box h2 {
+        color: #1f4e79 !important;
+        text-align: center;
+        margin-bottom: 5px;
+        font-weight: 700;
+    }
+    .login-box p {
+        color: #475569 !important;
+        text-align: center;
+        font-size: 14px;
+    }
+    
+    /* FORZAR VISIBILIDAD EN TEXTOS DE RADIOS (Botones de selección) */
+    div[data-testid="stRadio"] label p {
+        color: #1e293b !important;
+        font-weight: 600 !important;
+        font-size: 14px !important;
+    }
+    
+    /* FORZAR VISIBILIDAD EN LAS ETIQUETAS DE LOS INPUTS (Usuario, Contraseña, etc.) */
+    div[data-testid="stWidgetLabel"] p {
+        color: #1f4e79 !important;
+        font-weight: 600 !important;
+        font-size: 15px !important;
+    }
+    
+    /* CORRECCIÓN ABSOLUTA DE LAS CAJAS DE TEXTO (INPUTS BLANCOS) */
+    div[data-baseweb="input"] {
+        background-color: #ffffff !important;
+        border: 1px solid #cbd5e1 !important;
+        border-radius: 8px !important;
+    }
+    div[data-baseweb="input"] input {
+        color: #0f172a !important;
+        background-color: #ffffff !important;
+    }
+    div[data-testid="stTextArea"] textarea {
+        color: #0f172a !important;
+        background-color: #ffffff !important;
+        border: 1px solid #cbd5e1 !important;
+        border-radius: 8px !important;
+    }
+    
+    /* DISEÑO DE BOTONES PREMIUM */
     .stButton>button {
         background: linear-gradient(135deg, #1f4e79 0%, #2a6f97 100%) !important;
-        color: white !important;
+        color: #ffffff !important;
         border-radius: 8px !important;
-        padding: 10px 28px !important;
+        padding: 10px 24px !important;
         font-weight: 600 !important;
         border: none !important;
-        transition: all 0.3s ease !important;
-        box-shadow: 0 3px 10px rgba(31, 78, 121, 0.15) !important;
+        transition: all 0.2s ease !important;
+        box-shadow: 0 4px 10px rgba(31, 78, 121, 0.15) !important;
         width: 100%;
     }
     .stButton>button:hover {
-        transform: translateY(-2px) !important;
-        box-shadow: 0 5px 15px rgba(31, 78, 121, 0.3) !important;
-        filter: brightness(110%);
+        transform: translateY(-1px) !important;
+        box-shadow: 0 6px 15px rgba(31, 78, 121, 0.25) !important;
+        filter: brightness(105%);
     }
     
-    /* Tarjetas de Métricas Dinámicas */
+    /* Banner institucional interno */
+    .header-banner {
+        background: linear-gradient(135deg, #1f4e79 0%, #2a6f97 100%);
+        padding: 22px;
+        border-radius: 12px;
+        color: white;
+        margin-bottom: 25px;
+        box-shadow: 0 4px 12px rgba(31, 78, 121, 0.15);
+    }
+    
+    /* Tarjetas informativas internas */
     .metric-card {
-        background: white;
-        padding: 18px;
+        background: #ffffff;
+        padding: 15px;
         border-radius: 10px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        box-shadow: 0 2px 6px rgba(0,0,0,0.02);
         border-left: 5px solid #1f4e79;
-        margin-bottom: 15px;
-    }
-    
-    /* Inputs y Textareas estilizados */
-    div[data-testid="stTextArea"] textarea, div[data-testid="stTextInput"] input {
-        border-radius: 8px !important;
-        border: 1px solid #dcdfe6 !important;
-        transition: border-color 0.2s ease !important;
-    }
-    div[data-testid="stTextArea"] textarea:focus, div[data-testid="stTextInput"] input:focus {
-        border-color: #2a6f97 !important;
+        margin-bottom: 12px;
+        color: #334155;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -180,14 +211,14 @@ if "textos_raw" not in st.session_state:
 if "zip_bytes" not in st.session_state:
     st.session_state.zip_bytes = None
 
-# --- PANTALLAS DE ACCESO INTUITIVAS ---
+# --- PANTALLAS DE ACCESO ---
 if not st.session_state.logged_in:
     st.markdown("<div class='login-box'>", unsafe_allow_html=True)
-    st.markdown("<h2 style='text-align: center; color: #1f4e79; margin-top:0;'>🔑 Acceso Seguro</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #666; font-size:14px; margin-bottom:25px;'>Portal Interno de Medicina Preventiva - JER S.A.</p>", unsafe_allow_html=True)
+    st.markdown("<h2>🔑 Acceso Seguro</h2>", unsafe_allow_html=True)
+    st.markdown("<p>Portal Interno de Medicina Preventiva - JER S.A.</p>", unsafe_allow_html=True)
     
     if not tiene_usuarios():
-        st.info("🆕 Bienvenido. Configura tu cuenta inicial de Administrador.")
+        st.warning("🆕 Bienvenido. Configura tu cuenta inicial de Administrador.")
         reg_nombre = st.text_input("Nombre Completo")
         reg_user = st.text_input("Nombre de Usuario (Login)")
         reg_pwd = st.text_input("Contraseña", type="password")
@@ -423,7 +454,7 @@ def analizar_pdf_inteligente(texto):
         ["RECOMENDACIONES", "REMISIONES", "VIGILANCIA", "FIRMA", "ATENTAMENTE"]
     ))
 
-    # Extracción de Remisiones Estricta
+    # Extracción estricta de remisiones
     rem_raw = extraer_seccion(texto,
         ["INFORMACION DE REMISIONES", "INFORMACIÓN DE REMISIONES"],
         ["RECOMENDACIONES", "OBSERVACIONES", "VIGILANCIA", "FIRMA", "ATENTAMENTE", "DIAGNOSTICOS", "DIAGNÓSTICOS", "CONSENTIMIENTO", "AUTORIZO"]
@@ -452,7 +483,7 @@ def incrementar_consecutivo_local():
     guardar_config("ultimo_consecutivo_local", str(next_num))
     return f"SST-2026-{next_num}"
 
-# --- REEMPLAZO DE MARCADORES CONSERVANDO FUENTE ORIGINAL ---
+# --- REEMPLAZO DE MARCADORES ---
 def replace_in_paragraph(paragraph, key, value):
     if key not in paragraph.text:
         return
@@ -477,7 +508,7 @@ def replace_in_paragraph(paragraph, key, value):
     if not replaced_in_runs:
         paragraph.text = paragraph.text.replace(key, value)
 
-# --- REEMPLAZO DINÁMICO CLONANDO LA CALIGRAFÍA ORIGINAL ---
+# --- REEMPLAZO DINÁMICO CLONANDO LA CALIGRAFÍA ---
 def replace_placeholder_with_bullets(cell, placeholder, items_list):
     for p in cell.paragraphs:
         if placeholder in p.text:
@@ -577,16 +608,16 @@ def cargar_plantilla_base(archivo_cargado):
         return Document("FORMATO RECOMENDACIONES MEDICAS BOT.docx")
     return None
 
-# --- BANNER DE BIENVENIDA DINÁMICO ---
+# --- BANNER DE BIENVENIDA (AQUÍ ADENTRO SÓLO LOGUEADO) ---
 st.markdown(f"""
     <div class='header-banner'>
-        <h1 style='margin:0; font-size:26px;'>🩺 Automatización de Medicina Preventiva</h1>
-        <p style='margin:5px 0 0 0; opacity:0.9; font-size:14px;'>JER S.A. · Generador Inteligente de Comunicaciones de Recomendaciones Ocupacionales</p>
+        <h1 style='margin:0; font-size:26px; color:#ffffff;'>🩺 Automatización de Medicina Preventiva</h1>
+        <p style='margin:5px 0 0 0; opacity:0.9; font-size:14px; color:#ffffff;'>JER S.A. · Generador Inteligente de Comunicaciones de Recomendaciones Ocupacionales</p>
     </div>
 """, unsafe_allow_html=True)
 
 # --- PANEL LATERAL CON ESTILO ---
-st.sidebar.markdown(f"<h3>👤 Perfil</h3>", unsafe_allow_html=True)
+st.sidebar.markdown(f"<h3 style='color:#1f4e79;'>👤 Perfil Activo</h3>", unsafe_allow_html=True)
 st.sidebar.markdown(f"<div class='metric-card'><strong>Usuario:</strong> {st.session_state.username}</div>", unsafe_allow_html=True)
 if st.sidebar.button("Cerrar Sesión"):
     st.session_state.logged_in = False
@@ -628,7 +659,6 @@ with col_izq:
                 st.session_state.documentos[pdf.name] = datos
                 st.session_state.textos_raw[pdf.name] = texto_raw
         
-        # Tarjetas Métricas Informativas Dinámicas
         st.markdown(f"""
             <div style='display:flex; gap:10px; margin-top:15px;'>
                 <div class='metric-card' style='flex:1;'><strong>PDFs Leídos</strong><br><span style='font-size:20px; font-weight:700; color:#1f4e79;'>{len(st.session_state.documentos)}</span></div>
@@ -648,12 +678,11 @@ with col_izq:
             st.text_area("Texto de origen:", value=st.session_state.textos_raw[archivo_seleccionado], height=250)
 
 with col_der:
-    st.markdown("<h3 style='color:#1f4e79;'>📝 2. Revisión de Datos Extrayendo</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='color:#1f4e79;'>📋 2. Editor del Trabajador Seleccionado</h3>", unsafe_allow_html=True)
     
     if archivo_seleccionado:
         doc_actual = st.session_state.documentos[archivo_seleccionado]
         
-        # Agrupaciones estéticas
         with st.container():
             col_f1, col_f2 = st.columns(2)
             with col_f1:
@@ -669,7 +698,6 @@ with col_der:
             with col_p2:
                 cargo_persona = st.text_input("Cargo del Trabajador:", value=doc_actual["cargo"], key=f"cargo_{archivo_seleccionado}")
         
-        # Pestañas Dinámicas para organizar los textos largos
         tab1, tab2, tab3 = st.tabs(["🔬 Historial Clínico", "📋 Plan de Cuidado", "⚠️ Observación y Alertas"])
         
         with tab1:
@@ -778,7 +806,6 @@ with col_der:
                 with st.spinner("Compilando plantilla corporativa..."):
                     bytes_word = generar_word_unico(doc_actual)
                     if bytes_word:
-                        st.balloons()
                         st.download_button(
                             label=f"📥 Bajar Word de {doc_actual['nombre']}",
                             data=bytes_word,
@@ -811,7 +838,7 @@ with col_der:
                     )
     else:
         st.markdown("""
-            <div style='text-align:center; padding: 40px; color:#888;'>
+            <div style='text-align:center; padding: 40px; color:#64748b;'>
                 <h3>👋 Sistema Autónomo Listo</h3>
                 <p>Por favor, carga uno o varios exámenes médicos en PDF a la izquierda para desplegar el editor dinámico.</p>
             </div>
