@@ -186,11 +186,56 @@ if not st.session_state.logged_in:
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
+# --- REVISOR Y CORRECTOR DE ORTOGRAFÍA SST AUTÓNOMO ---
+def corregir_ortografia_sst(texto):
+    if not texto: 
+        return ""
+    
+    # Diccionario de correcciones precisas de acentuación y tipografía en SST
+    diccionario_SST = {
+        r'\brealziado\b': 'realizado',
+        r'\brealziados\b': 'realizados',
+        r'\baudiometria\b': 'audiometría',
+        r'\bvisiometria\b': 'visiometría',
+        r'\bespirometria\b': 'espiometría',
+        r'\boptometria\b': 'optometría',
+        r'\bfisica\b': 'física',
+        r'\bmedico\b': 'médico',
+        r'\bperiodico\b': 'periódico',
+        r'\bproteccion\b': 'protección',
+        r'\balimentacion\b': 'alimentación',
+        r'\brecomendacion\b': 'recomendación',
+        r'\brecomendaciones\s+medicas\b': 'recomendaciones médicas',
+        r'\boptometra\b': 'optómetra',
+        r'\boftalmologia\b': 'oftalmología',
+        r'\baudiologo\b': 'audiólogo',
+        r'\bposicion\b': 'posición',
+        r'\bactiba\b': 'activa',
+        r'\bactibas\b': 'activas',
+        r'\bevaluacion\b': 'evaluación',
+        r'\bcoordinacion\b': 'coordinación',
+        r'\butilizacion\b': 'utilización',
+        r'\bexposicion\b': 'exposición',
+        r'\bhidratacion\b': 'hidratación',
+        r'\bsegun\b': 'según',
+        r'\bperfil\s+lipidico\b': 'perfil lipídico',
+        r'\benfasis\b': 'énfasis',
+        r'\bosteomuscular\b': 'osteomuscular'
+    }
+    
+    texto_corregido = texto
+    for patron, reemplazo in diccionario_SST.items():
+        texto_corregido = re.sub(patron, reemplazo, texto_corregido, flags=re.IGNORECASE)
+    return texto_corregido
+
 # --- FUNCIÓN DE FORMATO: CASO ORACIÓN (SENTENCE CASE) ---
 def a_caso_oracion(texto):
     if not texto: 
         return ""
-    texto_min = texto.lower().strip()
+    
+    # Primero aplicamos la corrección ortográfica de palabras clave
+    texto_sano = corregir_ortografia_sst(texto)
+    texto_min = texto_sano.lower().strip()
     
     def capitalizar_match(match):
         return match.group(1) + match.group(2).upper()
@@ -223,15 +268,12 @@ def analizar_pdf_inteligente(texto):
     }
     if not texto: return datos
 
-    # 1. Nombre
     m_nom = re.search(r'(?:Nombre|Paciente|Colaborador|Trabajador):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_nom: datos["nombre"] = limpiar_campo(m_nom.group(1))
 
-    # 2. Cargo
     m_car = re.search(r'(?:Cargo|Ocupación|Ocupacion|Puesto):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_car: datos["cargo"] = limpiar_campo(m_car.group(1))
 
-    # 3. Tipo de Examen
     m_tipo = re.search(r'(?:Tipo de Examen|Concepto|Evaluación|Evaluacion|Motivo|Clase de Examen):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_tipo: 
         datos["tipo_examen"] = limpiar_campo(m_tipo.group(1)).upper()
@@ -241,7 +283,6 @@ def analizar_pdf_inteligente(texto):
                 datos["tipo_examen"] = palabra
                 break
 
-    # --- MAPA DE EXÁMENES CLAVE ---
     EXAMS_MAP = {
         "AUDIOMETRIA DE TONOS": "Audiometría",
         "AUDIOMETRIA": "Audiometría",
@@ -327,13 +368,11 @@ def analizar_pdf_inteligente(texto):
                 seccion.append(l.strip())
         return "\n".join(seccion).strip()
 
-    # Extraer observaciones normales
     datos["observaciones"] = a_caso_oracion(extraer_seccion(texto,
         ["OBSERVACIONES:", "OBSERVACION:", "OBSERVACIONES"],
         ["RECOMENDACIONES", "REMISIONES", "VIGILANCIA", "FIRMA", "ATENTAMENTE"]
     ))
 
-    # --- EXTRACCIÓN DE REMISIONES ESTRICTA DESDE LA TABLA DEL PROVEEDOR ---
     datos["remisiones"] = a_caso_oracion(extraer_seccion(texto,
         ["INFORMACION DE REMISIONES", "INFORMACIÓN DE REMISIONES"],
         ["RECOMENDACIONES", "OBSERVACIONES", "VIGILANCIA", "FIRMA", "ATENTAMENTE", "DIAGNOSTICOS", "DIAGNÓSTICOS"]
@@ -353,57 +392,101 @@ def incrementar_consecutivo_local():
     guardar_config("ultimo_consecutivo_local", str(next_num))
     return f"SST-2026-{next_num}"
 
-# --- REMPLAZO EN PÁRRAFOS ---
+# --- REEMPLAZO DE MARCADORES CONSERVANDO LA FUENTE ORIGINAL EXACTA ---
 def replace_in_paragraph(paragraph, key, value):
     if key not in paragraph.text:
         return
     replaced_in_runs = False
     for run in paragraph.runs:
         if key in run.text:
+            font_name = run.font.name
+            font_size = run.font.size
+            bold = run.bold
+            italic = run.italic
+            color = run.font.color.rgb if run.font.color else None
+            
             run.text = run.text.replace(key, value)
+            
+            if font_name: run.font.name = font_name
+            if font_size: run.font.size = font_size
+            run.bold = bold
+            run.italic = italic
+            if color: run.font.color.rgb = color
             replaced_in_runs = True
+            
     if not replaced_in_runs:
         paragraph.text = paragraph.text.replace(key, value)
 
-# --- REEMPLAZO DINÁMICO POR VIÑETAS NATIVAS EN WORD (A PRUEBA DE CRASHES) ---
+# --- REEMPLAZO DINÁMICO CLONANDO LA CALIGRAFÍA ORIGINAL (SIN DEFORMAR LISTAS) ---
 def replace_placeholder_with_bullets(cell, placeholder, items_list):
     for p in cell.paragraphs:
         if placeholder in p.text:
+            # Capturamos la tipografía exacta del párrafo de la plantilla
+            font_name = "Arial"
+            font_size = Pt(11)
+            if p.runs:
+                font_name = p.runs[0].font.name or "Arial"
+                font_size = p.runs[0].font.size or Pt(11)
+                
             p.text = ""
             if not items_list:
-                p.text = "Ninguno."
+                run = p.add_run("Ninguno.")
+                run.font.name = font_name
+                run.font.size = font_size
                 return
             
-            try:
-                p.style = 'List Bullet'
-                p.add_run(items_list[0])
-            except KeyError:
-                p.add_run("• " + items_list[0])
+            # Colocamos el primer elemento directamente clonando propiedades
+            run = p.add_run("• " + items_list[0])
+            run.font.name = font_name
+            run.font.size = font_size
             
             current_p = p
             for item in items_list[1:]:
                 new_p = OxmlElement('w:p')
                 current_p._p.addnext(new_p)
                 new_para = Paragraph(new_p, cell)
-                try:
-                    new_para.style = 'List Bullet'
-                    new_para.add_run(item)
-                except KeyError:
-                    new_para.add_run("• " + item)
+                
+                # Sincronizamos los márgenes e interlineado exacto
+                new_para.paragraph_format.line_spacing = p.paragraph_format.line_spacing
+                new_para.paragraph_format.space_after = p.paragraph_format.space_after
+                new_para.paragraph_format.left_indent = p.paragraph_format.left_indent
+                
+                run_new = new_para.add_run("• " + item)
+                run_new.font.name = font_name
+                run_new.font.size = font_size
                 current_p = new_para
             return
 
-# --- PROCESAMIENTO INTELIGENTE DE REMISIONES ---
+# --- PROCESAMIENTO INTELIGENTE DE REMISIONES (MANTIENE LA PALABRA Y PONE NO) ---
 def procesar_remisiones_en_celda(cell, remisiones_text):
     for p in cell.paragraphs:
         if "{{Remisiones}}" in p.text:
+            # Capturamos tipografía original
+            font_name = "Arial"
+            font_size = Pt(11)
+            if p.runs:
+                font_name = p.runs[0].font.name or "Arial"
+                font_size = p.runs[0].font.size or Pt(11)
+                
+            p.text = ""
+            
+            # SI DICE QUE NO O SIMILARES, SE MANTIENE EL FORMATO Y SE PONE NO
             if es_vacio_o_negativo(remisiones_text):
-                p.text = ""
+                run_label = p.add_run("remisiones: ")
+                run_label.bold = True
+                run_label.font.name = font_name
+                run_label.font.size = font_size
+                
+                run_val = p.add_run("no")
+                run_val.font.name = font_name
+                run_val.font.size = font_size
                 return
             else:
-                p.text = ""
-                run = p.add_run("remisiones:")
-                run.bold = True
+                # SI HAY REMISIONES, SE CREA LA LISTA ABAJO
+                run_label = p.add_run("remisiones:")
+                run_label.bold = True
+                run_label.font.name = font_name
+                run_label.font.size = font_size
                 
                 remisiones_lista = []
                 for r in re.split(r'\n|,|;', remisiones_text):
@@ -412,7 +495,9 @@ def procesar_remisiones_en_celda(cell, remisiones_text):
                         remisiones_lista.append(a_caso_oracion(r_clean))
                 
                 if not remisiones_lista:
-                    p.text = ""
+                    run_val = p.add_run(" no")
+                    run_val.font.name = font_name
+                    run_val.font.size = font_size
                     return
                 
                 current_p = p
@@ -420,11 +505,14 @@ def procesar_remisiones_en_celda(cell, remisiones_text):
                     new_p = OxmlElement('w:p')
                     current_p._p.addnext(new_p)
                     new_para = Paragraph(new_p, cell)
-                    try:
-                        new_para.style = 'List Bullet'
-                        new_para.add_run(item)
-                    except KeyError:
-                        new_para.add_run("• " + item)
+                    
+                    new_para.paragraph_format.line_spacing = p.paragraph_format.line_spacing
+                    new_para.paragraph_format.space_after = p.paragraph_format.space_after
+                    new_para.paragraph_format.left_indent = p.paragraph_format.left_indent
+                    
+                    run_new = new_para.add_run("• " + item)
+                    run_new.font.name = font_name
+                    run_new.font.size = font_size
                     current_p = new_para
                 return
 
@@ -514,19 +602,19 @@ with col_der:
             cargo_persona = st.text_input("Cargo del Trabajador:", value=doc_actual["cargo"], key=f"cargo_{archivo_seleccionado}")
             
         examenes_unificados = "\n".join(doc_actual["examenes_lista"])
-        examenes_realizados = st.text_area("Exámenes Realizados (Uno por línea para viñetas en Word):", value=examenes_unificados, key=f"ex_{archivo_seleccionado}", height=120)
+        examenes_realizados = st.text_area("Exámenes Realizados (Uno por línea):", value=examenes_unificados, key=f"ex_{archivo_seleccionado}", height=120)
         
         recom_unificadas = "; ".join(doc_actual["recomendaciones_lista"])
-        recom_medicas = st.text_area("Recomendaciones Médicas:", value=recom_unificadas, key=f"recom_{archivo_seleccionado}")
+        recom_medicas = st.text_area("Recomendaciones Médicas (Se corregirá la ortografía automáticamente):", value=recom_unificadas, key=f"recom_{archivo_seleccionado}")
         
         vigilancia_unificada = "; ".join(doc_actual["vigilancia_lista"])
         vigilancia = st.text_area("Programa de Vigilancia Epidemiológica (PVE):", value=vigilancia_unificada, key=f"vig_{archivo_seleccionado}")
         
         observaciones = st.text_area("Observaciones:", value=doc_actual["observaciones"], key=f"obs_{archivo_seleccionado}")
         
-        remisiones = st.text_area("Remisiones (Escribe 'Ninguna' o déjalo vacío para ocultarlo de la carta):", value=doc_actual["remisiones"], key=f"rem_{archivo_seleccionado}")
+        remisiones = st.text_input("Remisiones (Escribe 'No' para marcarlo negativo):", value=doc_actual["remisiones"] if doc_actual["remisiones"] else "No", key=f"rem_{archivo_seleccionado}")
 
-        # Guardar cambios en memoria en tiempo real
+        # Guardar cambios aplicando corrección de ortografía y caso oración
         doc_actual["nombre"] = nombre_persona
         doc_actual["cargo"] = cargo_persona
         doc_actual["tipo_examen"] = tipo_examen
@@ -534,7 +622,7 @@ with col_der:
         doc_actual["recomendaciones"] = a_caso_oracion(recom_medicas)
         doc_actual["vigilancia"] = a_caso_oracion(vigilancia)
         doc_actual["observaciones"] = a_caso_oracion(observaciones)
-        doc_actual["remisiones"] = a_caso_oracion(remisiones)
+        doc_actual["remisiones"] = remisiones
 
         # --- CONSTRUCTOR DE WORD ---
         def generar_word_unico(datos_trabajador):
@@ -596,11 +684,11 @@ with col_der:
                             for key, val in replacements.items():
                                 replace_in_paragraph(p, key, val)
                         
-                        # 2. Reemplazo por Viñetas de Exámenes Realizados
+                        # 2. Reemplazo por Viñetas Clonando Caligrafía
                         replace_placeholder_with_bullets(cell, "{{LISTA DE EXAMENES REALIZADOS}}", datos_trabajador["examenes_lista"])
                         replace_placeholder_with_bullets(cell, "{{LISTA DE EXAMENES REALIZADOS", datos_trabajador["examenes_lista"])
                         
-                        # 3. Procesamiento Inteligente de Remisiones (Habilitar Listas o Borrar la Sección)
+                        # 3. Procesamiento Inteligente de Remisiones
                         procesar_remisiones_en_celda(cell, datos_trabajador["remisiones"])
                         
                         # 4. Estampado de Firma Autorizada
