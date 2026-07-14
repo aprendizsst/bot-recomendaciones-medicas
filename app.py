@@ -2,6 +2,9 @@ import streamlit as st
 import pdfplumber
 from docx import Document
 from docx.shared import Inches, Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.text.paragraph import Paragraph
 import sqlite3
 import hashlib
 import os
@@ -192,41 +195,23 @@ def limpiar_campo(texto):
     texto_limpio = re.sub(r'[:\-,_]+', '', texto_limpio)
     return texto_limpio.strip()
 
-def extraer_seccion(texto, palabras_inicio, palabras_fin):
-    lineas = texto.split('\n')
-    seccion = []
-    dentro = False
-    for linea in lineas:
-        linea_upper = linea.upper().strip()
-        if not dentro:
-            if any(h in linea_upper for h in palabras_inicio):
-                dentro = True
-                for h in palabras_inicio:
-                    if h in linea_upper:
-                        idx = linea_upper.find(h) + len(h)
-                        resto = linea[idx:].strip(" :-,_")
-                        if resto: seccion.append(resto)
-                        break
-        else:
-            if any(h in linea_upper for h in palabras_fin):
-                break
-            seccion.append(linea.strip())
-    return "\n".join(seccion).strip()
-
 def analizar_pdf_inteligente(texto):
     datos = {
         "nombre": "", "cargo": "", "tipo_examen": "PERIODICO",
-        "examenes": "", "recomendaciones": "", "vigilancia": "",
+        "examenes_lista": [], "recomendaciones_lista": [], "vigilancia_lista": [],
         "observaciones": "", "remisiones": "", "consecutivo": ""
     }
     if not texto: return datos
 
+    # 1. Nombre
     m_nom = re.search(r'(?:Nombre|Paciente|Colaborador|Trabajador):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_nom: datos["nombre"] = limpiar_campo(m_nom.group(1))
 
+    # 2. Cargo
     m_car = re.search(r'(?:Cargo|Ocupación|Ocupacion|Puesto):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_car: datos["cargo"] = limpiar_campo(m_car.group(1))
 
+    # 3. Tipo de Examen
     m_tipo = re.search(r'(?:Tipo de Examen|Concepto|Evaluación|Evaluacion|Motivo|Clase de Examen):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_tipo: 
         datos["tipo_examen"] = limpiar_campo(m_tipo.group(1))
@@ -236,19 +221,100 @@ def analizar_pdf_inteligente(texto):
                 datos["tipo_examen"] = palabra
                 break
 
-    examenes_comunes = ["Visiometría", "Visiometria", "Audiometría", "Audiometria", "Espiometría", "Espirometria", "Frotis", "Cuadro Hemático", "Optometría", "Laboratorio Clínico", "Glicemia", "Colesterol"]
-    detectados = [ex for ex in examenes_comunes if re.search(r'\b' + re.escape(ex) + r'\b', texto, re.IGNORECASE)]
-    datos["examenes"] = ", ".join(detectados) if detectados else "Examen Clínico Ocupacional"
+    # --- MAPA DE EXÁMENES CLAVE ---
+    EXAMS_MAP = {
+        "AUDIOMETRIA DE TONOS": "Audiometría",
+        "AUDIOMETRIA": "Audiometría",
+        "ESPIROMETRIA": "Espiometría",
+        "OPTOMETRIA": "Optometría",
+        "EXAMEN MEDICO OCUPACIONAL": "Examen Clínico Ocupacional",
+        "PERFIL LIPIDICO": "Perfil Lipídico",
+        "GLICEMIA": "Glicemia",
+        "ENFASIS OSTEOMUSCULAR": "Énfasis Osteomuscular",
+        "ELECTROCARDIOGRAMA DE RITMO O DE SUPERFICIE SOD": "Electrocardiograma",
+        "ELECTROCARDIOGRAMA": "Electrocardiograma",
+        "FROTIS": "Frotis",
+        "CUADRO HEMATICO": "Cuadro Hemático",
+        "COLESTEROL": "Colesterol",
+        "TRIGLICERIDOS": "Triglicéridos",
+        "PARCIAL DE ORINA": "Parcial de Orina",
+        "VSH": "VSH",
+        "PCR": "PCR"
+    }
 
-    datos["recomendaciones"] = extraer_seccion(texto, 
-        ["RECOMENDACIONES MEDICAS", "RECOMENDACIONES:", "INDICACIONES MEDICAS"],
-        ["OBSERVACIONES", "REMISIONES", "SISTEMA DE VIGILANCIA", "PVE", "VIGILANCIA", "FIRMA", "ATENTAMENTE"]
-    )
+    examenes_detectados = []
+    recomendaciones_detectadas = []
+    pve_detectados = set()
 
-    datos["vigilancia"] = extraer_seccion(texto,
-        ["SISTEMA DE VIGILANCIA", "VIGILANCIA EPIDEMIOLOGICA", "PVE", "SVE", "VIGILANCIA:"],
-        ["RECOMENDACIONES", "OBSERVACIONES", "REMISIONES", "FIRMA", "ATENTAMENTE"]
-    )
+    # Procesar línea por línea para entender la tabla
+    lineas = texto.split('\n')
+    for linea in lineas:
+        linea_upper = linea.upper().strip()
+        
+        # Buscar coincidencias de exámenes en la línea
+        matched_key = None
+        for key in sorted(EXAMS_MAP.keys(), key=len, reverse=True):
+            if key in linea_upper:
+                matched_key = key
+                break
+        
+        if matched_key:
+            # 1. Registrar examen realizado
+            nombre_examen = EXAMS_MAP[matched_key]
+            if nombre_examen not in examenes_detectados:
+                examenes_detectados.append(nombre_examen)
+            
+            # 2. Extraer recomendaciones (contenido después del examen)
+            idx = linea_upper.find(matched_key) + len(matched_key)
+            rec_part = linea[idx:].strip(" :-,_/")
+            
+            # Excluir resultados o estados genéricos de los laboratorios o valoraciones
+            status_exclusions = ["REALIZADO", "REALZIADO", "SIN ALTERACIONES", "NORMAL", "SANO", "NEGATIVO", "NO REGISTRA", "N/A", ""]
+            if rec_part.upper().strip(" .") not in status_exclusions:
+                # Partir sub-recomendaciones por '//', comas o listas numeradas
+                parts = re.split(r'//|,|\b\d+\.|\b\d+\-', rec_part)
+                for p in parts:
+                    p_clean = p.strip(" .-_/()[]")
+                    if p_clean and len(p_clean) > 3:
+                        if p_clean.upper() not in status_exclusions and p_clean.upper() != "SST":
+                            recomendaciones_detectadas.append(p_clean)
+                            
+                            # Auto-Detección Inteligente del PVE basado en términos clave
+                            p_upper = p_clean.upper()
+                            if any(w in p_upper for w in ["AUDITIV", "RUIDO", "OIDO", "AUDIO"]):
+                                pve_detectados.add("Vigilancia Epidemiológica de Conservación Auditiva")
+                            elif any(w in p_upper for w in ["OSTEOMUSCULAR", "POSTURAL", "ERGONOMIC", "LUMBAR", "ESPALDA", "DESORDEN", "ESQUEL", "COLUMNA"]):
+                                pve_detectados.add("Vigilancia Epidemiológica de Prevención Osteomuscular (DME)")
+                            elif any(w in p_upper for w in ["VISUAL", "OPTIC", "GAFAS", "OJOS", "RX", "VISION", "LENTES"]):
+                                pve_detectados.add("Vigilancia Epidemiológica de Conservación Visual")
+                            elif any(w in p_upper for w in ["RESPIRATORI", "ESPIROMETR", "POLVO", "HUMO", "RESPIRACION"]):
+                                pve_detectados.add("Vigilancia Epidemiológica de Conservación Respiratoria")
+
+    datos["examenes_lista"] = examenes_detectados
+    datos["recomendaciones_lista"] = recomendaciones_detectadas
+    datos["vigilancia_lista"] = list(pve_detectados)
+
+    # 3. Observaciones y Remisiones (Bloques genéricos del final)
+    def extraer_seccion(texto_completo, palabras_inicio, palabras_fin):
+        lineas_bloque = texto_completo.split('\n')
+        seccion = []
+        dentro = False
+        for l in lineas_bloque:
+            l_upper = l.upper().strip()
+            if not dentro:
+                if any(h in l_upper for h in palabras_inicio):
+                    dentro = True
+                    for h in palabras_inicio:
+                        if h in l_upper:
+                            idx = l_upper.find(h) + len(h)
+                            resto = l[idx:].strip(" :-,_")
+                            if resto: seccion.append(resto)
+                            break
+            else:
+                if any(h in l_upper for h in palabras_fin):
+                    break
+                seccion.append(l.strip())
+        return "\n".join(seccion).strip()
 
     datos["observaciones"] = extraer_seccion(texto,
         ["OBSERVACIONES:", "OBSERVACION:", "OBSERVACIONES"],
@@ -286,6 +352,30 @@ def replace_in_paragraph(paragraph, key, value):
     if not replaced_in_runs:
         paragraph.text = paragraph.text.replace(key, value)
 
+# --- REEMPLAZO DINÁMICO POR VIÑETAS NATIVAS EN WORD ---
+def replace_placeholder_with_bullets(cell, placeholder, items_list):
+    for p in cell.paragraphs:
+        if placeholder in p.text:
+            p.text = ""  # Limpiamos el texto original
+            if not items_list:
+                p.text = "Ninguno."
+                return
+            
+            # El primer elemento se agrega al párrafo del marcador original
+            p.style = 'List Bullet'
+            p.add_run(items_list[0])
+            
+            # Los siguientes elementos se insertan abajo dinámicamente preservando XML
+            current_p = p
+            for item in items_list[1:]:
+                new_p = OxmlElement('w:p')
+                current_p._p.addnext(new_p)
+                new_para = Paragraph(new_p, cell)
+                new_para.style = 'List Bullet'
+                new_para.add_run(item)
+                current_p = new_para
+            return
+
 # --- CONFIGURACIÓN DE PLANTILLA WORD ---
 def cargar_plantilla_base(archivo_cargado):
     if archivo_cargado:
@@ -321,7 +411,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("✍️ Cargar Firma Autorizada")
 firma_file = st.sidebar.file_uploader("Sube la firma de Víctor (.png / .jpg)", type=["png", "jpg"])
 
-# --- DIVISION DE TRABAJO ---
+# --- COLUMNAS DE TRABAJO ---
 col_izq, col_der = st.columns([1, 1.2])
 
 with col_izq:
@@ -340,8 +430,6 @@ with col_izq:
                 st.session_state.textos_raw[pdf.name] = texto_raw
         
         st.success(f"🟢 ¡Se cargaron {len(st.session_state.documentos)} trabajadores con éxito!")
-        
-        # Lista selectiva de los trabajadores procesados
         lista_trabajadores = list(st.session_state.documentos.keys())
         archivo_seleccionado = st.selectbox("📝 Selecciona un trabajador para editar:", lista_trabajadores)
     else:
@@ -359,7 +447,6 @@ with col_der:
     if archivo_seleccionado:
         doc_actual = st.session_state.documentos[archivo_seleccionado]
         
-        # Formulario Dinámico usando claves únicas
         col_f1, col_f2 = st.columns(2)
         with col_f1:
             lugar = st.text_input("Lugar de Expedición:", value="Tunja", key=f"lugar_{archivo_seleccionado}")
@@ -374,9 +461,17 @@ with col_der:
         with col_p2:
             cargo_persona = st.text_input("Cargo del Trabajador:", value=doc_actual["cargo"], key=f"cargo_{archivo_seleccionado}")
             
-        examenes_realizados = st.text_area("Exámenes Realizados:", value=doc_actual["examenes"], key=f"ex_{archivo_seleccionado}")
-        recom_medicas = st.text_area("Recomendaciones Médicas:", value=doc_actual["recomendaciones"], key=f"recom_{archivo_seleccionado}")
-        vigilancia = st.text_area("Programa de Vigilancia Epidemiológica (PVE):", value=doc_actual["vigilancia"], key=f"vig_{archivo_seleccionado}")
+        # Exámenes realizados: Lista editable en líneas de texto
+        examenes_unificados = "\n".join(doc_actual["examenes_lista"])
+        examenes_realizados = st.text_area("Exámenes Realizados (Uno por línea para viñetas en Word):", value=examenes_unificados, key=f"ex_{archivo_seleccionado}", height=120)
+        
+        # Unificamos recomendaciones para que sean legibles en el editor
+        recom_unificadas = "; ".join(doc_actual["recomendaciones_lista"])
+        recom_medicas = st.text_area("Recomendaciones Médicas:", value=recom_unificadas, key=f"recom_{archivo_seleccionado}")
+        
+        vigilancia_unificada = "; ".join(doc_actual["vigilancia_lista"])
+        vigilancia = st.text_area("Programa de Vigilancia Epidemiológica (PVE):", value=vigilancia_unificada, key=f"vig_{archivo_seleccionado}")
+        
         observaciones = st.text_area("Observaciones:", value=doc_actual["observaciones"], key=f"obs_{archivo_seleccionado}")
         remisiones = st.text_area("Remisiones:", value=doc_actual["remisiones"], key=f"rem_{archivo_seleccionado}")
 
@@ -384,18 +479,17 @@ with col_der:
         doc_actual["nombre"] = nombre_persona
         doc_actual["cargo"] = cargo_persona
         doc_actual["tipo_examen"] = tipo_examen
-        doc_actual["examenes"] = examenes_realizados
+        doc_actual["examenes_lista"] = [linea.strip() for linea in examenes_realizados.split('\n') if linea.strip()]
         doc_actual["recomendaciones"] = recom_medicas
         doc_actual["vigilancia"] = vigilancia
         doc_actual["observaciones"] = observaciones
         doc_actual["remisiones"] = remisiones
 
-        # --- CONSTRUCTOR INDIVIDUAL ---
+        # --- CONSTRUCTOR DE WORD ---
         def generar_word_unico(datos_trabajador):
-            # Cargar Plantilla original
             doc_word = cargar_plantilla_base(template_uploaded)
             if not doc_word:
-                st.error("No se encontró la plantilla Word en el sistema ni se ha subido una.")
+                st.error("No se encontró la plantilla Word en el sistema.")
                 return None
             
             # Obtener Consecutivo
@@ -414,7 +508,6 @@ with col_der:
                         data = r.json()
                         if data.get("status") == "success":
                             consecutivo_final = data.get("consecutive")
-                            datos_trabajador["consecutivo"] = consecutivo_final
                         else:
                             consecutivo_final = incrementar_consecutivo_local()
                     except:
@@ -433,7 +526,7 @@ with col_der:
             for eng, esp in meses.items():
                 fecha_formateada = fecha_formateada.replace(eng, esp)
 
-            # Diccionario de Reemplazos de Plantilla Exactos
+            # Diccionario de Reemplazos Simples de Texto
             replacements = {
                 "{{NUMERO DE CONSECUTIVO}}": consecutivo_final,
                 "{{TIPO DE EXAMEN}}": datos_trabajador["tipo_examen"].upper(),
@@ -441,24 +534,25 @@ with col_der:
                 "{{FECHA HOY}}": fecha_formateada,
                 "{{NOMBRE DE LA PERSONA}}": datos_trabajador["nombre"],
                 "{{CARGO DE LA PERSONA}}": datos_trabajador["cargo"],
-                "{{LISTA DE EXAMENES REALIZADOS}}": datos_trabajador["examenes"],
-                "{{LISTA DE EXAMENES REALIZADOS": datos_trabajador["examenes"],
                 "{{Recomendaciones médicas}}": datos_trabajador["recomendaciones"] if datos_trabajador["recomendaciones"] else "No registra.",
                 "{{Programa de vigilancia epidemiológica}}": datos_trabajador["vigilancia"] if datos_trabajador["vigilancia"] else "Ninguno.",
                 "{{Observaciones}}": datos_trabajador["observaciones"] if datos_trabajador["observaciones"] else "Ninguna.",
                 "{{Remisiones}}": datos_trabajador["remisiones"] if datos_trabajador["remisiones"] else "Ninguna."
             }
 
-            # Procesar el cuerpo de las tablas en la plantilla
             for table in doc_word.tables:
                 for row in table.rows:
                     for cell in row.cells:
-                        # Reemplazar placeholders de texto
+                        # 1. Reemplazo de marcadores normales
                         for p in cell.paragraphs:
                             for key, val in replacements.items():
                                 replace_in_paragraph(p, key, val)
                         
-                        # Buscar dinámicamente el nombre de Víctor para estampar la firma arriba de él
+                        # 2. Reemplazo por Viñetas de Exámenes Realizados
+                        replace_placeholder_with_bullets(cell, "{{LISTA DE EXAMENES REALIZADOS}}", datos_trabajador["examenes_lista"])
+                        replace_placeholder_with_bullets(cell, "{{LISTA DE EXAMENES REALIZADOS", datos_trabajador["examenes_lista"])
+                        
+                        # 3. Estampado de Firma Autorizada
                         idx_victor = -1
                         for idx, p in enumerate(cell.paragraphs):
                             if "VÍCTOR ALONSO MORENO CASAS" in p.text:
@@ -466,7 +560,6 @@ with col_der:
                                 break
                         
                         if idx_victor != -1 and firma_file:
-                            # Se estampa la firma 2 párrafos arriba de su nombre
                             p_firma = cell.paragraphs[idx_victor - 2]
                             p_firma.text = ""
                             p_firma.add_run().add_picture(firma_file, width=Inches(2.2))
@@ -476,7 +569,7 @@ with col_der:
             b_io.seek(0)
             return b_io.getvalue()
 
-        # --- INTERFAZ DE GENERACIÓN ---
+        # --- BOTONES DE ACCIÓN ---
         st.markdown("---")
         col_gen1, col_gen2 = st.columns(2)
         
@@ -485,7 +578,7 @@ with col_der:
                 with st.spinner("Procesando plantilla..."):
                     bytes_word = generar_word_unico(doc_actual)
                     if bytes_word:
-                        st.success(f"🟢 Consecutivo '{doc_actual['consecutivo']}' reservado con éxito.")
+                        st.success(f"🟢 Consecutivo '{doc_actual['consecutivo']}' reservado.")
                         st.download_button(
                             label=f"📥 Descargar Word: {doc_actual['nombre']}",
                             data=bytes_word,
@@ -496,7 +589,7 @@ with col_der:
         with col_gen2:
             if len(st.session_state.documentos) > 1:
                 if st.button("📦 Generar TODOS en un ZIP"):
-                    with st.spinner("Conectando con Google Sheets y empaquetando en un ZIP..."):
+                    with st.spinner("Conectando con Sheets y empaquetando..."):
                         zip_buffer = io.BytesIO()
                         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                             for filename, datos_trab in st.session_state.documentos.items():
@@ -507,14 +600,14 @@ with col_der:
                                     
                         zip_buffer.seek(0)
                         st.session_state.zip_bytes = zip_buffer.getvalue()
-                        st.success(f"🎉 ¡ZIP creado con éxito conteniendo {len(st.session_state.documentos)} informes!")
+                        st.success(f"🎉 ZIP creado con {len(st.session_state.documentos)} informes.")
                         
                 if st.session_state.zip_bytes:
                     st.download_button(
-                        label="📥 Descargar archivo ZIP de Informes",
+                        label="📥 Descargar ZIP Masivo",
                         data=st.session_state.zip_bytes,
                         file_name=f"Recomendaciones_SST_JER_SA_{fecha.strftime('%Y%m%d')}.zip",
                         mime="application/zip"
                     )
     else:
-        st.info("👋 Sube uno o varios archivos PDF a la izquierda para empezar a maquetar.")
+        st.info("👋 Sube archivos PDF en el panel de la izquierda para comenzar.")
