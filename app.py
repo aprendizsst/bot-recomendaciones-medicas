@@ -13,6 +13,14 @@ import re
 import requests
 import io
 import zipfile
+import tempfile
+
+# Intentar importar FPDF para generación de PDF nativo
+try:
+    from fpdf import FPDF
+    fpdf_disponible = True
+except ImportError:
+    fpdf_disponible = False
 
 # --- CONFIGURACIÓN DE PÁGINA AVANZADA ---
 st.set_page_config(
@@ -217,6 +225,8 @@ if "textos_raw" not in st.session_state:
     st.session_state.textos_raw = {}
 if "export_bytes" not in st.session_state:
     st.session_state.export_bytes = None
+if "zip_bytes" not in st.session_state:
+    st.session_state.zip_bytes = None
 
 # --- PANTALLAS DE ACCESO ---
 if not st.session_state.logged_in:
@@ -285,7 +295,7 @@ def corregir_ortografia_sst(texto):
     diccionario_SST = {
         r'\brealziado\b': 'realizado', r'\brealziados\b': 'realizados',
         r'\baudiometria\b': 'audiometría', r'\bvisiometria\b': 'visiometría',
-        r'\bespirometria\b': 'espiometría', r'\boptometria\b': 'optometría',
+        r'\bespirometria\b': 'espirometría', r'\boptometria\b': 'optometría',
         r'\bfisica\b': 'física', r'\bmedico\b': 'médico', r'\bperiodico\b': 'periódico',
         r'\bproteccion\b': 'protección', r'\balimentacion\b': 'alimentación',
         r'\brecomendacion\b': 'recomendación', r'\bperfil\s+lipidico\b': 'perfil lipídico',
@@ -332,7 +342,7 @@ def analizar_pdf_inteligente(texto):
 
     EXAMS_MAP = {
         "AUDIOMETRIA DE TONOS": "Audiometría", "AUDIOMETRIA": "Audiometría",
-        "ESPIROMETRIA": "Espiometría", "OPTOMETRIA": "Optometría",
+        "ESPIROMETRIA": "Espirometría", "OPTOMETRIA": "Optometría",
         "EXAMEN MEDICO OCUPACIONAL": "Examen Clínico Ocupacional",
         "PERFIL LIPIDICO": "Perfil Lipídico", "GLICEMIA": "Glicemia",
         "ENFASIS OSTEOMUSCULAR": "Énfasis Osteomuscular", "ELECTROCARDIOGRAMA DE RITMO": "Electrocardiograma", 
@@ -362,13 +372,11 @@ def analizar_pdf_inteligente(texto):
         if in_exams_section:
             matched_key = None
             for key in sorted(EXAMS_MAP.keys(), key=len, reverse=True):
-                # Detecta si el examen está al inicio del renglón (primeros 15 caracteres)
                 if key in linea_upper and linea_upper.find(key) < 15:
                     matched_key = key
                     break
             
             if matched_key:
-                # Si encontró un examen nuevo, guarda el acumulado del anterior
                 if current_exam:
                     recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "") + " " + exam_text_accumulator
                 
@@ -376,28 +384,23 @@ def analizar_pdf_inteligente(texto):
                 if current_exam not in examenes_detectados:
                     examenes_detectados.append(current_exam)
                 
-                # Inicia el nuevo acumulador
                 idx = linea_upper.find(matched_key) + len(matched_key)
                 exam_text_accumulator = linea[idx:].strip(" :-,_/")
             else:
-                # Si no es un examen nuevo, cose la línea actual a la memoria del examen anterior
                 if current_exam and linea.strip():
                     exam_text_accumulator += " " + linea.strip()
 
-    # Guarda el último examen que haya quedado en memoria al terminar el bloque
     if current_exam:
         recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "") + " " + exam_text_accumulator
 
     recoms_por_examen = []
     pve_detectados = set()
 
-    # Procesamiento y Limpieza de los bloques armados
     for exam in examenes_detectados:
         rec_part = recoms_raw_dict.get(exam, "").strip()
         status_exclusions = ["REALIZADO", "REALZIADO", "SIN ALTERACIONES", "NORMAL", "SANO", "NEGATIVO", "NO REGISTRA", "N/A", ""]
         
         if rec_part.upper().strip(" .") not in status_exclusions and len(rec_part) > 3:
-            # Dividimos por //, punto y coma, o listas numeradas (omitimos las comas para NO romper oraciones largas)
             parts = re.split(r'//|;|\b\d+\.|\b\d+\-', rec_part)
             
             valid_parts = []
@@ -407,10 +410,17 @@ def analizar_pdf_inteligente(texto):
                     valid_parts.append(a_caso_oracion(p_clean))
                     
                     p_upper = p_clean.upper()
-                    if any(w in p_upper for w in ["AUDITIV", "RUIDO", "OIDO", "AUDIO"]): pve_detectados.add("Conservación Auditiva")
-                    elif any(w in p_upper for w in ["POSTURAL", "LUMBAR", "OSTEOMUSCULAR", "ERGONOMIC"]): pve_detectados.add("Prevención Osteomuscular (DME)")
-                    elif any(w in p_upper for w in ["VISUAL", "GAFAS", "RX", "VISION", "LENTES"]): pve_detectados.add("Conservación Visual")
-                    elif any(w in p_upper for w in ["RESPIRATORI", "ESPIROMETR", "POLVO", "HUMO"]): pve_detectados.add("Conservación Respiratoria")
+                    
+                    # --- CORRECCIÓN CLAVE: BÚSQUEDA MEDIANTE LÍMITES DE PALABRA (\b) PARA EVITAR FALSOS POSITIVOS ---
+                    if any(re.search(patron, p_upper) for patron in [r'\bAUDITIV', r'\bRUIDO', r'\bOIDO', r'\bOÍDO', r'\bAUDIO']):
+                        pve_detectados.add("Conservación Auditiva")
+                    elif any(re.search(patron, p_upper) for patron in [r'\bPOSTURAL', r'\bLUMBAR', r'\bOSTEOMUSCULAR', r'\bERGONOMIC', r'\bESPALDA', r'\bCARGA']):
+                        pve_detectados.add("Prevención Osteomuscular (DME)")
+                    # \bVISIÓN / \bVISION evita que "revisión" o "división" activen erróneamente la conservación visual
+                    elif any(re.search(patron, p_upper) for patron in [r'\bVISUAL', r'\bGAFAS', r'\bVISION', r'\bVISIÓN', r'\bLENTE', r'\bOPTOMETR', r'\bRX\b']):
+                        pve_detectados.add("Conservación Visual")
+                    elif any(re.search(patron, p_upper) for patron in [r'\bRESPIRATORI', r'\bESPIROMETR', r'\bPOLVO', r'\bHUMO']):
+                        pve_detectados.add("Conservación Respiratoria")
             
             if valid_parts:
                 recoms_por_examen.append(f"{exam}: {' - '.join(valid_parts)}")
@@ -531,10 +541,182 @@ def procesar_remisiones_en_celda(cell, remisiones_text):
             else:
                 p.add_run(remisiones_text)
 
+# --- LIMPIEZA DE CARACTERES ESPECIALES PARA PDF (LATIN-1) ---
+def clean_pdf_str(text):
+    if not text: return ""
+    replacements = {
+        "\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'",
+        "\u2013": "-", "\u2014": "-", "\u2022": "*", "\xfa": "ú"
+    }
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+    return text.encode('latin-1', 'replace').decode('latin-1')
+
+# --- GENERADOR DE PDF NATIVO PROFESIONAL (SST) ---
+def generar_pdf_nativo(datos, consecutivo_num, lugar, fecha, firma_file):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    
+    # Paleta de colores Corporativa
+    primary_color = (31, 78, 121)  # Azul #1f4e79
+    dark_neutral = (40, 40, 40)
+    
+    def s(txt):
+        return clean_pdf_str(txt)
+    
+    # Encabezado (Banda de fondo clara)
+    pdf.set_fill_color(240, 244, 248)
+    pdf.rect(10, 10, 190, 20, "F")
+    
+    # Texto de Encabezado
+    pdf.set_text_color(*primary_color)
+    pdf.set_font("Arial", "B", 11)
+    pdf.set_xy(15, 12)
+    pdf.cell(110, 8, s("JER S.A. - PORTAL DE MEDICINA PREVENTIVA Y DEL TRABAJO"), 0, 0, "L")
+    
+    # Caja de Consecutivo
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_fill_color(*primary_color)
+    pdf.set_xy(140, 13)
+    pdf.cell(55, 14, s(consecutivo_num), 0, 0, "C", True)
+    
+    # Reset del cursor de texto
+    pdf.set_xy(10, 36)
+    pdf.set_text_color(*dark_neutral)
+    
+    # Fecha y lugar
+    pdf.set_font("Arial", "", 10)
+    fecha_texto = f"{lugar}, {fecha.strftime('%d de %B de %Y')}"
+    pdf.cell(0, 10, s(fecha_texto), 0, 1, "L")
+    pdf.ln(1)
+    
+    # Datos del Colaborador
+    pdf.set_font("Arial", "B", 10)
+    pdf.cell(0, 5, s("Sr(a)."), 0, 1, "L")
+    pdf.set_font("Arial", "B", 12)
+    pdf.set_text_color(*primary_color)
+    pdf.cell(0, 6, s(datos['nombre'].upper()), 0, 1, "L")
+    pdf.set_font("Arial", "I", 10)
+    pdf.set_text_color(*dark_neutral)
+    pdf.cell(0, 5, s(f"Cargo: {datos['cargo']}"), 0, 1, "L")
+    pdf.ln(4)
+    
+    # Línea Divisoria
+    pdf.set_draw_color(*primary_color)
+    pdf.set_line_width(0.5)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(4)
+    
+    # Asunto
+    pdf.set_font("Arial", "B", 10)
+    pdf.set_text_color(*primary_color)
+    pdf.cell(20, 5, s("ASUNTO:"), 0, 0, "L")
+    pdf.set_font("Arial", "", 10)
+    pdf.set_text_color(*dark_neutral)
+    pdf.cell(0, 5, s(f"RECOMENDACIONES EXAMEN MÉDICO DE {datos['tipo_examen'].upper()}"), 0, 1, "L")
+    pdf.ln(4)
+    
+    # Cuerpo de la carta
+    pdf.set_font("Arial", "", 10)
+    body_text = (
+        "Cordial saludo:\n\n"
+        "Según los lineamientos del programa de medicina preventiva y del trabajo de JER S.A; "
+        "se hace entrega de las recomendaciones establecidas por el Proveedor de servicios de Exámenes "
+        f"Médico Ocupacionales de tipo {datos['tipo_examen'].title()}:"
+    )
+    pdf.multi_cell(0, 5, s(body_text))
+    pdf.ln(4)
+    
+    # Exámenes Realizados
+    pdf.set_font("Arial", "B", 10)
+    pdf.set_text_color(*primary_color)
+    pdf.cell(0, 6, s("EXÁMENES REALIZADOS:"), 0, 1, "L")
+    pdf.set_font("Arial", "", 10)
+    pdf.set_text_color(*dark_neutral)
+    for ex in datos['examenes_lista']:
+        pdf.cell(5)
+        pdf.cell(0, 5, s(f"- {ex}"), 0, 1, "L")
+    pdf.ln(4)
+    
+    # Recomendaciones
+    pdf.set_font("Arial", "B", 10)
+    pdf.set_text_color(*primary_color)
+    pdf.cell(0, 6, s("RECOMENDACIONES MÉDICAS:"), 0, 1, "L")
+    pdf.set_font("Arial", "", 10)
+    pdf.set_text_color(*dark_neutral)
+    if datos['recomendaciones_lista']:
+        for rec in datos['recomendaciones_lista']:
+            pdf.set_x(15)
+            pdf.multi_cell(0, 5, s(f"• {rec}"))
+    else:
+        pdf.cell(5)
+        pdf.cell(0, 5, s("Ninguna."), 0, 1, "L")
+    pdf.ln(4)
+    
+    # Observaciones
+    pdf.set_font("Arial", "B", 10)
+    pdf.set_text_color(*primary_color)
+    pdf.cell(32, 5, s("OBSERVACIONES:"), 0, 0, "L")
+    pdf.set_font("Arial", "", 10)
+    pdf.set_text_color(*dark_neutral)
+    obs_text = datos['observaciones'] if datos['observaciones'] else "Ninguna."
+    pdf.multi_cell(0, 5, s(obs_text))
+    pdf.ln(2)
+    
+    # Remisiones
+    pdf.set_font("Arial", "B", 10)
+    pdf.set_text_color(*primary_color)
+    pdf.cell(26, 5, s("REMISIONES:"), 0, 0, "L")
+    pdf.set_font("Arial", "", 10)
+    pdf.set_text_color(*dark_neutral)
+    rem_text = datos['remisiones'] if datos['remisiones'] else "No presenta remisiones."
+    pdf.multi_cell(0, 5, s(rem_text))
+    pdf.ln(8)
+    
+    # Prevenir que la firma quede huérfana en el final de página
+    if pdf.get_y() > 220:
+        pdf.add_page()
+        
+    # Estampa de Firma Autorizada
+    if firma_file:
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_img:
+                temp_img.write(firma_file.getvalue())
+                temp_path = temp_img.name
+            pdf.image(temp_path, x=15, y=pdf.get_y(), w=42)
+            pdf.ln(18)
+            os.unlink(temp_path)
+        except Exception:
+            pdf.ln(10)
+    else:
+        pdf.ln(10)
+        
+    # Firmante
+    pdf.set_font("Arial", "B", 10)
+    pdf.set_text_color(*primary_color)
+    pdf.cell(0, 5, s("VÍCTOR ALONSO MORENO CASAS"), 0, 1, "L")
+    pdf.set_font("Arial", "", 9)
+    pdf.set_text_color(*dark_neutral)
+    pdf.cell(0, 4, s("Coordinador SST"), 0, 1, "L")
+    pdf.cell(0, 4, s("JER S.A."), 0, 1, "L")
+    
+    # Compatibilidad de bytes entre fpdf y fpdf2
+    pdf_out = pdf.output()
+    if isinstance(pdf_out, str):
+        return pdf_out.encode('latin1')
+    return bytes(pdf_out)
+
 # --- GENERADOR DE HTML COMPATIBLE PARA VISTA DE IMPRESIÓN ---
 def generar_html_vista(datos, consecutivo_num, lugar, fecha):
     return f"""
     <div style="font-family: Arial, sans-serif; color: #333; padding: 20px; line-height: 1.5; background: white; border: 1px solid #ccc; max-width: 800px; margin: auto;">
+        <style>
+            @media print {{
+                body {{ background: white; color: black; }}
+                @page {{ size: letter; margin: 20mm; }}
+            }}
+        </style>
         <div style="text-align: right; font-weight: bold; color: #1f4e79;">Consecutivo: {consecutivo_num}</div>
         <div style="text-align: center; font-weight: bold; font-size: 16px; margin: 20px 0; color: #1f4e79; background: #f0f4f8; padding: 8px;">
             ASUNTO: RECOMENDACIONES EXAMEN {datos['tipo_examen'].upper()}
@@ -627,6 +809,7 @@ if st.sidebar.button("Cerrar Sesión"):
     st.session_state.documentos = {}
     st.session_state.textos_raw = {}
     st.session_state.export_bytes = None
+    st.session_state.zip_bytes = None
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -675,7 +858,7 @@ with col_der:
         
         col_f1, col_f2 = st.columns(2)
         with col_f1: lugar = st.text_input("Lugar:", value="Tunja")
-        with col_f2: fecha = st.date_input("Fecha:", value=datetime.date(2026, 7, 14))
+        with col_f2: fecha = st.date_input("Fecha:", value=datetime.date.today())
         
         tipo_examen = st.text_input("Tipo de Examen:", value=doc_actual["tipo_examen"].upper())
         
@@ -696,7 +879,7 @@ with col_der:
         })
 
         st.markdown("---")
-        formato_salida = st.radio("⚡ Elige formato de generación:", ["Microsoft Word (.docx)", "Impresión de Respaldo Web (HTML/PDF)"], horizontal=True)
+        formato_salida = st.radio("⚡ Elige formato de generación:", ["Documento PDF Oficial (.pdf)", "Microsoft Word (.docx)", "Impresión de Respaldo Web (HTML)"], horizontal=True)
         
         col_act1, col_gen2 = st.columns(2)
         
@@ -708,6 +891,14 @@ with col_der:
                         if bytes_word:
                             st.success(f"🟢 Guardado en Sheets (Consecutivo: {consec_num})")
                             st.download_button("📥 Descargar Word (.docx)", data=bytes_word, file_name=f"Informe_{nombre_persona.replace(' ','_')}.docx")
+                    elif "PDF" in formato_salida:
+                        if fpdf_disponible:
+                            _, consec_num = generar_word_unico(doc_actual, lugar, fecha, template_uploaded, None)
+                            bytes_pdf = generar_pdf_nativo(doc_actual, consec_num, lugar, fecha, firma_file)
+                            st.success(f"🟢 Guardado en Sheets (Consecutivo: {consec_num})")
+                            st.download_button("📥 Descargar PDF Oficial (.pdf)", data=bytes_pdf, file_name=f"Informe_{nombre_persona.replace(' ','_')}.pdf", mime="application/pdf")
+                        else:
+                            st.error("Librería fpdf2 no instalada en el entorno. Por favor ejecute: pip install fpdf2")
                     else:
                         _, consec_num = generar_word_unico(doc_actual, lugar, fecha, template_uploaded, None)
                         html_out = generar_html_vista(doc_actual, consec_num, lugar, fecha)
@@ -725,6 +916,10 @@ with col_der:
                                     bytes_word, consec_num = generar_word_unico(datos_trab, lugar, fecha, template_uploaded, firma_file)
                                     if bytes_word:
                                         zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.docx", bytes_word)
+                                elif "PDF" in formato_salida:
+                                    _, consec_num = generar_word_unico(datos_trab, lugar, fecha, template_uploaded, None)
+                                    bytes_pdf = generar_pdf_nativo(datos_trab, consec_num, lugar, fecha, firma_file)
+                                    zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.pdf", bytes_pdf)
                                 else:
                                     _, consec_num = generar_word_unico(datos_trab, lugar, fecha, template_uploaded, None)
                                     html_out = generar_html_vista(datos_trab, consec_num, lugar, fecha)
