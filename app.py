@@ -9,6 +9,7 @@ import os
 import datetime
 import re
 import requests
+import io  # <-- Aquí está el import que nos hacía falta
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Generador de Cartas SST - JER S.A.", page_icon="🩺", layout="wide")
@@ -180,7 +181,7 @@ if not st.session_state.logged_in:
     st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
-# --- FUNCIONES DE EXTRACCIÓN MEJORADAS (MÉTODO HEURÍSTICO) ---
+# --- FUNCIONES DE EXTRACCIÓN ---
 def limpiar_campo(texto):
     if not texto: return ""
     exclusiones = r'\b(Teléfono|Telefono|Tel|C\.C|CC|Documento|Identificac|Cedula|Cédula|Edad|Sexo|Cargo|Fecha|Estado|Empresa|Ciudad)\b'
@@ -334,7 +335,7 @@ with col_izq:
             st.text_area("Texto crudo:", value=texto_raw, height=300)
 
 with col_der:
-    st.subheader("📋 2. Formato de Envío") #[cite: 2]
+    st.subheader("📋 2. Formato de Envío")
     st.write("Edita la información antes de generar tu documento final:")
     
     consecutivo_actual = obtener_config("google_sheets_url")
@@ -346,25 +347,25 @@ with col_der:
 
     col_f1, col_f2 = st.columns(2)
     with col_f1:
-        lugar = st.text_input("Lugar de Expedición:", value="Tunja") #[cite: 2]
+        lugar = st.text_input("Lugar de Expedición:", value="Tunja")
     with col_f2:
-        fecha = st.date_input("Fecha de la Carta:", value=datetime.date(2026, 7, 14)) #[cite: 2]
+        fecha = st.date_input("Fecha de la Carta:", value=datetime.date(2026, 7, 14))
 
-    tipo_examen = st.text_input("Tipo de Examen (ASUNTO):", value=datos_sugeridos["tipo_examen"].upper(), placeholder="Ej: PERIÓDICO") #[cite: 2]
+    tipo_examen = st.text_input("Tipo de Examen (ASUNTO):", value=datos_sugeridos["tipo_examen"].upper(), placeholder="Ej: PERIÓDICO")
     
     col_p1, col_p2 = st.columns(2)
     with col_p1:
-        nombre_persona = st.text_input("Nombre del Trabajador:", value=datos_sugeridos["nombre"]) #[cite: 2]
+        nombre_persona = st.text_input("Nombre del Trabajador:", value=datos_sugeridos["nombre"])
     with col_p2:
-        cargo_persona = st.text_input("Cargo del Trabajador:", value=datos_sugeridos["cargo"]) #[cite: 2]
+        cargo_persona = st.text_input("Cargo del Trabajador:", value=datos_sugeridos["cargo"])
         
-    examenes_realizados = st.text_area("Exámenes Realizados:", value=datos_sugeridos["examenes"], placeholder="Ej: Audiometría, Visiometría, Laboratorios...") #[cite: 2]
+    examenes_realizados = st.text_area("Exámenes Realizados:", value=datos_sugeridos["examenes"], placeholder="Ej: Audiometría, Visiometría, Laboratorios...")
     
-    recom_medicas = st.text_area("Recomendaciones Médicas:", value=datos_sugeridos["recomendaciones"]) #[cite: 2]
-    vigilancia = st.text_area("Programa de Vigilancia Epidemiológica (PVE):", value=datos_sugeridos["vigilancia"]) #[cite: 2]
+    recom_medicas = st.text_area("Recomendaciones Médicas:", value=datos_sugeridos["recomendaciones"])
+    vigilancia = st.text_area("Programa de Vigilancia Epidemiológica (PVE):", value=datos_sugeridos["vigilancia"])
     
-    observaciones = st.text_area("Observaciones:", value=datos_sugeridos["observaciones"]) #[cite: 2]
-    remisiones = st.text_area("Remisiones:", value=datos_sugeridos["remisiones"]) #[cite: 2]
+    observaciones = st.text_area("Observaciones:", value=datos_sugeridos["observaciones"])
+    remisiones = st.text_area("Remisiones:", value=datos_sugeridos["remisiones"])
 
     # Botón para Procesar y Estructurar
     if st.button("✨ Generar Word"):
@@ -411,7 +412,7 @@ with col_der:
                 # 1. Consecutivo
                 p_cons = doc.add_paragraph()
                 p_cons.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                run_cons = p_cons.add_run(f"Consecutivo: {consecutivo_final}") #[cite: 2]
+                run_cons = p_cons.add_run(f"Consecutivo: {consecutivo_final}")
                 run_cons.bold = True
                 
                 doc.add_paragraph()
@@ -419,7 +420,7 @@ with col_der:
                 # 2. Asunto
                 p_asunto = doc.add_paragraph()
                 p_asunto.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                run_asunto = p_asunto.add_run(f"ASUNTO: RECOMENDACIONES EXAMEN {tipo_examen.upper()}") #[cite: 2]
+                run_asunto = p_asunto.add_run(f"ASUNTO: RECOMENDACIONES EXAMEN {tipo_examen.upper()}")
                 run_asunto.bold = True
                 
                 doc.add_paragraph()
@@ -434,25 +435,25 @@ with col_der:
                 }
                 for eng, esp in meses.items():
                     fecha_formateada = fecha_formateada.replace(eng, esp)
-                p_fecha.add_run(f"{lugar}, {fecha_formateada}") #[cite: 2]
+                p_fecha.add_run(f"{lugar}, {fecha_formateada}")
                 
                 doc.add_paragraph()
                 
                 # 4. Destinatario
-                doc.add_paragraph("Sr(a).") #[cite: 2]
+                doc.add_paragraph("Sr(a).")
                 p_nom = doc.add_paragraph()
-                p_nom_run = p_nom.add_run(nombre_persona) #[cite: 2]
+                p_nom_run = p_nom.add_run(nombre_persona)
                 p_nom_run.bold = True
-                doc.add_paragraph(cargo_persona) #[cite: 2]
+                doc.add_paragraph(cargo_persona)
                 
                 doc.add_paragraph()
                 
                 # 5. Saludo y Cuerpo
-                doc.add_paragraph("Cordial saludo,") #[cite: 2]
+                doc.add_paragraph("Cordial saludo,")
                 p_cuerpo = doc.add_paragraph(
                     "Según los lineamientos del programa de medicina preventiva y del trabajo de JER S.A; "
                     "se hace entrega de las recomendaciones establecidas por el Proveedor de servicios de "
-                    "Exámenes Médico Ocupacionales (Ingreso, Periódico, egreso, cambio de cargo y post incapacidad)" #[cite: 2]
+                    "Exámenes Médico Ocupacionales (Ingreso, Periódico, egreso, cambio de cargo y post incapacidad)"
                 )
                 p_cuerpo.paragraph_format.line_spacing = 1.15
                 
@@ -460,7 +461,7 @@ with col_der:
                 
                 # 6. Exámenes
                 p_ex = doc.add_paragraph()
-                p_ex_run = p_ex.add_run("EXÁMENES REALIZADOS:") #[cite: 2]
+                p_ex_run = p_ex.add_run("EXÁMENES REALIZADOS:")
                 p_ex_run.bold = True
                 doc.add_paragraph(examenes_realizados if examenes_realizados else "Ninguno registrado.")
                 
@@ -468,40 +469,40 @@ with col_der:
                 
                 # 7. Recomendaciones
                 p_recom = doc.add_paragraph()
-                p_recom_run = p_recom.add_run("Recomendaciones: ") #[cite: 2]
+                p_recom_run = p_recom.add_run("Recomendaciones: ")
                 p_recom_run.bold = True
-                p_recom.add_run(recom_medicas if recom_medicas else "No registra.") #[cite: 2]
+                p_recom.add_run(recom_medicas if recom_medicas else "No registra.")
                 
                 if vigilancia:
-                    p_pve_run = p_recom.add_run("\nPrograma de vigilancia epidemiológica: ") #[cite: 2]
+                    p_pve_run = p_recom.add_run("\nPrograma de vigilancia epidemiológica: ")
                     p_pve_run.bold = True
-                    p_recom.add_run(vigilancia) #[cite: 2]
+                    p_recom.add_run(vigilancia)
                     
                 # 8. Observaciones
                 p_obs = doc.add_paragraph()
-                p_obs_run = p_obs.add_run("observaciones: ") #[cite: 2]
+                p_obs_run = p_obs.add_run("observaciones: ")
                 p_obs_run.bold = True
-                p_obs.add_run(observaciones if observaciones else "Ninguna.") #[cite: 2]
+                p_obs.add_run(observaciones if observaciones else "Ninguna.")
                 
                 # 9. Remisiones
                 p_rem = doc.add_paragraph()
-                p_rem_run = p_rem.add_run("remisiones: ") #[cite: 2]
+                p_rem_run = p_rem.add_run("remisiones: ")
                 p_rem_run.bold = True
-                p_rem.add_run(remisiones if remisiones else "Ninguna.") #[cite: 2]
+                p_rem.add_run(remisiones if remisiones else "Ninguna.")
                 
                 doc.add_paragraph()
                 
                 # 10. Firma
-                doc.add_paragraph("Atentamente,") #[cite: 2]
+                doc.add_paragraph("Atentamente,")
                 if firma_file:
                     doc.add_picture(firma_file, width=Inches(2.2))
                 else:
                     doc.add_paragraph()
                     
                 p_firma_nombre = doc.add_paragraph()
-                p_fn_run = p_firma_nombre.add_run("VÍCTOR ALONSO MORENO CASAS") #[cite: 2]
+                p_fn_run = p_firma_nombre.add_run("VÍCTOR ALONSO MORENO CASAS")
                 p_fn_run.bold = True
-                doc.add_paragraph("Coordinador SST") #[cite: 2]
+                doc.add_paragraph("Coordinador SST")
                 
                 # Guardar en memoria
                 b_io = io.BytesIO()
