@@ -14,57 +14,58 @@ st.write("Sube tu PDF médico, la IA extraerá las recomendaciones y te entregar
 api_key = st.text_input("Introduce tu API Key de Google Gemini:", type="password", 
                          help="Necesitas una clave de API de Google AI Studio para usar la IA.")
 
+# Inicializar la lista de modelos disponibles en el estado de la sesión
+if "modelos_disponibles" not in st.session_state:
+    st.session_state.modelos_disponibles = []
+
+# Si el usuario introduce la API Key, cargamos dinámicamente los modelos que su cuenta sí tiene permitidos
+if api_key:
+    try:
+        genai.configure(api_key=api_key)
+        modelos = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                # Guardamos el nombre limpio para que sea amigable en la interfaz
+                nombre_limpio = m.name.replace('models/', '')
+                modelos.append(nombre_limpio)
+        st.session_state.modelos_disponibles = modelos
+    except Exception as e:
+        st.error(f"Error al conectar con Google para listar modelos: {e}")
+
+# Si hay modelos disponibles, mostramos un selector en la pantalla
+modelo_seleccionado = None
+if st.session_state.modelos_disponibles:
+    # Intentamos seleccionar gemini-1.5-flash por defecto si existe en la lista
+    index_defecto = 0
+    preferidos = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash']
+    for pref in preferidos:
+        if pref in st.session_state.modelos_disponibles:
+            index_defecto = st.session_state.modelos_disponibles.index(pref)
+            break
+            
+    modelo_seleccionado = st.selectbox(
+        "🤖 Selecciona el modelo de Inteligencia Artificial:",
+        options=st.session_state.modelos_disponibles,
+        index=index_defecto,
+        help="Si un modelo te arroja un error rojo, cámbialo en esta lista y vuelve a intentar."
+    )
+
 # 2. Subida del archivo PDF
 uploaded_file = st.file_uploader("Arrastra o selecciona tu archivo PDF", type="pdf")
 
 if uploaded_file is not None:
     if not api_key:
         st.warning("⚠️ Por favor, introduce tu API Key de Gemini para poder procesar el archivo.")
+    elif not modelo_seleccionado:
+        st.warning("⚠️ Por favor, espera a que se carguen los modelos disponibles o verifica tu API Key.")
     else:
         # Botón para iniciar el proceso
         if st.button("✨ Procesar y Generar Word"):
-            with st.spinner("Leyendo el PDF y analizando con IA... Por favor espera."):
+            with st.spinner(f"Procesando el PDF usando el modelo '{modelo_seleccionado}'..."):
                 try:
-                    # Configurar la IA con la clave provista
+                    # Configurar la IA
                     genai.configure(api_key=api_key)
-                    
-                    # --- DETECCIÓN DINÁMICA DE MODELO (EVITA EL ERROR 404) ---
-                    with st.spinner("Buscando modelos compatibles con tu cuenta..."):
-                        try:
-                            # Listamos los modelos que soporta tu clave de API
-                            modelos_sistema = []
-                            for m in genai.list_models():
-                                if 'generateContent' in m.supported_generation_methods:
-                                    modelos_sistema.append(m.name)
-                            
-                            # Nuestra lista de preferidos de mejor a peor
-                            preferidos = [
-                                'models/gemini-1.5-flash',
-                                'models/gemini-2.5-flash',
-                                'models/gemini-1.5-flash-latest',
-                                'models/gemini-2.5-flash-latest',
-                                'models/gemini-pro'
-                            ]
-                            
-                            modelo_final = None
-                            for pref in preferidos:
-                                if pref in modelos_sistema:
-                                    modelo_final = pref
-                                    break
-                            
-                            if not modelo_final:
-                                # Si no encuentra ninguno de los anteriores, toma el primero que sirva de tu lista
-                                modelo_final = modelos_sistema[0] if modelos_sistema else 'models/gemini-1.5-flash'
-                            
-                            # Limpiamos el nombre para usarlo
-                            modelo_nombre = modelo_final.replace('models/', '')
-                            st.info(f"🤖 ¡Conexión exitosa! Usando el modelo de IA: `{modelo_nombre}`")
-                            model = genai.GenerativeModel(modelo_nombre)
-                            
-                        except Exception as list_error:
-                            # Fallback de seguridad por si falla la lista
-                            st.warning("No se pudo mapear los modelos, usando el de respaldo...")
-                            model = genai.GenerativeModel('gemini-1.5-flash')
+                    model = genai.GenerativeModel(modelo_seleccionado)
                     
                     # Extraer el texto del PDF
                     texto_pdf = ""
