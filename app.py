@@ -14,13 +14,7 @@ import requests
 import io
 import zipfile
 import tempfile
-
-# Intentar importar FPDF para generación de PDF nativo
-try:
-    from fpdf import FPDF
-    fpdf_disponible = True
-except ImportError:
-    fpdf_disponible = False
+import subprocess
 
 # --- CONFIGURACIÓN DE PÁGINA AVANZADA ---
 st.set_page_config(
@@ -282,7 +276,6 @@ def limpiar_campo(texto):
     partes = re.split(r'\b(Teléfono|Telefono|Tel|C\.C|CC|Documento|Cedula|Cargo|Fecha)\b', texto, flags=re.IGNORECASE)
     return re.sub(r'[:\-,_]+', '', partes[0]).strip().title()
 
-# --- ELIMINACIÓN DE RUIDO HORIZONTAL DE COLUMNAS ---
 def limpiar_linea_ruido_lateral(linea):
     patron_ruido = r'\s{2,}(VISUAL|DME|CARDIOVASCULAR|SVE|AUDITIVO|RESPIRATORIO|SISTEMA|VIGILANCIA)\s*$'
     linea_limpia = re.sub(patron_ruido, '', linea, flags=re.IGNORECASE)
@@ -303,7 +296,8 @@ def analizar_pdf_inteligente(texto):
     datos = {
         "nombre": "", "cargo": "", "tipo_examen": "PERIODICO",
         "examenes_lista": [], "recomendaciones_lista": [], "vigilancia_lista": [],
-        "observaciones": "", "remisiones": "No", "consecutivo": ""
+        "observaciones": "", "remisiones": "No", "consecutivo": "",
+        "vigilancia_programa": "NINGUNO"
     }
     if not texto: return datos
 
@@ -412,6 +406,23 @@ def analizar_pdf_inteligente(texto):
     datos["recomendaciones_lista"] = recoms_por_examen
     datos["vigilancia_lista"] = list(pve_detectados)
 
+    # --- EXTRAER PROGRAMA DE VIGILANCIA EN SU PROPIO CAMPO ---
+    prog_vig = ""
+    patron_pve = r'(?:Ingresar al programa de vigilancia epidemiol[oó]gica o programa de prevenci[oó]n y promoci[oó]n)\s*\n?\s*([^\n]+)'
+    m_pve = re.search(patron_pve, texto, re.IGNORECASE)
+    if m_pve:
+        prog_vig = m_pve.group(1).strip()
+        prog_vig = re.sub(r'\b(ppyp|sve|pyp)\b', '', prog_vig, flags=re.IGNORECASE)
+        prog_vig = prog_vig.strip(" :-,_/.()[]").upper()
+    
+    datos["vigilancia_programa"] = prog_vig if prog_vig else "NINGUNO"
+
+    def limpiar_linea_columnas(linea):
+        columnas = [col.strip() for col in re.split(r'\s{2,}', linea) if col.strip()]
+        if not columnas: return ""
+        if len(columnas) == 1: return columnas[0]
+        return max(columnas, key=len)
+
     def extraer_seccion_limpia(texto_completo, palabras_inicio, palabras_fin):
         seccion = []
         dentro = False
@@ -431,7 +442,12 @@ def analizar_pdf_inteligente(texto):
                 seccion.append(l_limpia)
         return "\n".join([s for s in seccion if s]).strip()
 
-    datos["observaciones"] = a_caso_oracion(extraer_seccion_limpia(texto, ["OBSERVACIONES:"], ["RECOMENDACIONES", "REMISIONES"]))
+    # CORRECCIÓN: Stop words añadidas para que "Ingresar al programa..." no se filtre en Observaciones
+    datos["observaciones"] = a_caso_oracion(extraer_seccion_limpia(
+        texto, 
+        ["OBSERVACIONES:"], 
+        ["RECOMENDACIONES", "REMISIONES", "INGRESAR AL PROGRAMA", "PROGRAMA DE VIGILANCIA"]
+    ))
     
     rem_raw = extraer_seccion_limpia(texto, ["INFORMACION DE REMISIONES", "INFORMACIÓN DE REMISIONES"], ["CONSENTIMIENTO", "AUTORIZO"])
     datos["remisiones"] = "No" if es_vacio_o_negativo(rem_raw) else a_caso_oracion(rem_raw)
@@ -553,10 +569,7 @@ def insert_bullets_in_placeholder(parent_container, paragraph, items_list):
         
         current_p = new_para
 
-# --- CORRECCIÓN: INSERCIÓN EXCLUSIVA DE RECOMENDACIONES (IGNORA TEXTOS DE SVE) ---
-def insert_recommendations_in_placeholder(parent_container, paragraph, recom_list, pve_list):
-    # CORRECCIÓN CLAVE: Solo cargamos las recomendaciones médicas puras.
-    # Eliminamos el bucle que inyectaba los textos repetitivos del SVE ("Ingresar al Sistema de Vigilancia...")
+def insert_recommendations_in_placeholder(parent_container, paragraph, recom_list):
     combined_items = list(recom_list)
 
     if paragraph.runs:
@@ -582,13 +595,11 @@ def insert_recommendations_in_placeholder(parent_container, paragraph, recom_lis
         if color: run_none.font.color.rgb = color
         return
 
-    # Primera recomendación al lado del título
     run_first = paragraph.add_run("• " + combined_items[0])
     run_first.font.name = font_name
     run_first.font.size = font_size
     if color: run_first.font.color.rgb = color
 
-    # Demás recomendaciones en renglones inferiores con sangría idéntica a tu plantilla
     current_p = paragraph
     for item in combined_items[1:]:
         new_p_element = OxmlElement('w:p')
@@ -646,7 +657,7 @@ def incrementar_consecutivo_local():
     guardar_config("ultimo_consecutivo_local", str(next_num))
     return f"SST-2026-{next_num}"
 
-# --- CONSTRUCTOR DE DOCUMENTO ÚNICO INTELIGENTE ---
+# --- CONSTRUCTOR DE DOCUMENTO ÚNICO INTELIGENTE (PRODUCCIÓN) ---
 def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_file):
     if template_uploaded:
         doc_word = Document(template_uploaded)
@@ -671,23 +682,23 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
         else: consecutivo_final = incrementar_consecutivo_local()
         datos_trabajador["consecutivo"] = consecutivo_final
 
+    # CORRECCIÓN CLAVE: Agregamos el placeholder de vigilancia a simple_replacements para heredar el estilo de la tabla
     simple_replacements = {
         "{{NUMERO DE CONSECUTIVO}}": consecutivo_final, 
         "{{TIPO DE EXAMEN}}": datos_trabajador["tipo_examen"].upper(),
         "{{LUGAR}}": lugar, 
         "{{FECHA HOY}}": fecha.strftime("%d de %B de %Y"),
         "{{NOMBRE DE LA PERSONA}}": datos_trabajador["nombre"].upper(), 
-        "{{CARGO DE LA PERSONA}}": datos_trabajador["cargo"].upper()
+        "{{CARGO DE LA PERSONA}}": datos_trabajador["cargo"].upper(),
+        "{{Programa de vigilancia epidemiológica}}": datos_trabajador.get("vigilancia_programa", "NINGUNO").upper()
     }
 
-    # Procesamiento dinámico de párrafos
     def procesar_parrafo(p, container):
         if "{{LISTA DE EXAMENES REALIZADOS}}" in p.text:
             insert_bullets_in_placeholder(container, p, datos_trabajador["examenes_lista"])
             return True
         if "{{Recomendaciones médicas}}" in p.text:
-            # Llama a la función que ahora ignora el array de SVE/PVE
-            insert_recommendations_in_placeholder(container, p, datos_trabajador["recomendaciones_lista"], datos_trabajador["vigilancia_lista"])
+            insert_recommendations_in_placeholder(container, p, datos_trabajador["recomendaciones_lista"])
             return True
         if "{{Observaciones}}" in p.text:
             replace_label_placeholder(p, "Observaciones: ", "{{Observaciones}}", datos_trabajador["observaciones"])
@@ -729,158 +740,47 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
     doc_word.save(b_io)
     return b_io.getvalue(), consecutivo_final
 
-# --- LIMPIEZA DE CARACTERES ESPECIALES PARA PDF (LATIN-1) ---
-def clean_pdf_str(text):
-    if not text: return ""
-    replacements = {
-        "\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'",
-        "\u2013": "-", "\u2014": "-", "\u2022": "*", "\xfa": "ú",
-        "\xed": "í", "\xe1": "á", "\xf3": "ó", "\xe9": "é"
-    }
-    for k, v in replacements.items():
-        text = text.replace(k, v)
-    return text.encode('latin-1', 'replace').decode('latin-1')
+# --- COMPILADOR DE WORD A PDF DE ALTA FIDELIDAD ---
+def convertir_docx_a_pdf(docx_bytes):
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as temp_docx:
+        temp_docx.write(docx_bytes)
+        temp_docx_path = temp_docx.name
 
-# --- GENERADOR DE PDF NATIVO PROFESIONAL (SST) ---
-def generar_pdf_nativo(datos, consecutivo_num, lugar, fecha, firma_file):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf_path = temp_docx_path.replace(".docx", ".pdf")
     
-    primary_color = (31, 78, 121)
-    dark_neutral = (40, 40, 40)
-    
-    def s(txt):
-        return clean_pdf_str(txt)
-    
-    pdf.set_fill_color(240, 244, 248)
-    pdf.rect(10, 10, 190, 20, "F")
-    
-    pdf.set_text_color(*primary_color)
-    pdf.set_font("Arial", "B", 11)
-    pdf.set_xy(15, 12)
-    pdf.cell(110, 8, s("JER S.A. - PORTAL DE MEDICINA PREVENTIVA Y DEL TRABAJO"), 0, 0, "L")
-    
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_fill_color(*primary_color)
-    pdf.set_xy(140, 13)
-    pdf.cell(55, 14, s(consecutivo_num), 0, 0, "C", True)
-    
-    pdf.set_xy(10, 36)
-    pdf.set_text_color(*dark_neutral)
-    
-    pdf.set_font("Arial", "", 10)
-    fecha_texto = f"{lugar}, {fecha.strftime('%d de %B de %Y')}"
-    pdf.cell(0, 10, s(fecha_texto), 0, 1, "L")
-    pdf.ln(1)
-    
-    pdf.set_font("Arial", "B", 10)
-    pdf.cell(0, 5, s("Sr(a)."), 0, 1, "L")
-    pdf.set_font("Arial", "B", 12)
-    pdf.set_text_color(*primary_color)
-    pdf.cell(0, 6, s(datos['nombre'].upper()), 0, 1, "L")
-    pdf.set_font("Arial", "I", 10)
-    pdf.set_text_color(*dark_neutral)
-    pdf.cell(0, 5, s(f"Cargo: {datos['cargo']}"), 0, 1, "L")
-    pdf.ln(4)
-    
-    pdf.set_draw_color(*primary_color)
-    pdf.set_line_width(0.5)
-    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
-    pdf.ln(4)
-    
-    pdf.set_font("Arial", "B", 10)
-    pdf.set_text_color(*primary_color)
-    pdf.cell(20, 5, s("ASUNTO:"), 0, 0, "L")
-    pdf.set_font("Arial", "", 10)
-    pdf.set_text_color(*dark_neutral)
-    pdf.cell(0, 5, s(f"RECOMENDACIONES EXAMEN MÉDICO DE {datos['tipo_examen'].upper()}"), 0, 1, "L")
-    pdf.ln(4)
-    
-    pdf.set_font("Arial", "", 10)
-    body_text = (
-        "Cordial saludo:\n\n"
-        "Según los lineamientos del programa de medicina preventiva y del trabajo de JER S.A; "
-        "se hace entrega de las recomendaciones establecidas por el Proveedor de servicios de Exámenes "
-        f"Médico Ocupacionales de tipo {datos['tipo_examen'].title()}:"
-    )
-    pdf.multi_cell(0, 5, s(body_text))
-    pdf.ln(4)
-    
-    # Exámenes
-    pdf.set_font("Arial", "B", 10)
-    pdf.set_text_color(*primary_color)
-    pdf.cell(0, 6, s("EXÁMENES REALIZADOS:"), 0, 1, "L")
-    pdf.set_font("Arial", "", 10)
-    pdf.set_text_color(*dark_neutral)
-    for ex in datos['examenes_lista']:
-        pdf.cell(5)
-        pdf.cell(0, 5, s(f"- {ex}"), 0, 1, "L")
-    pdf.ln(4)
-    
-    # Recomendaciones
-    pdf.set_font("Arial", "B", 10)
-    pdf.set_text_color(*primary_color)
-    pdf.cell(0, 6, s("RECOMENDACIONES MÉDICAS:"), 0, 1, "L")
-    pdf.set_font("Arial", "", 10)
-    pdf.set_text_color(*dark_neutral)
-    if datos['recomendaciones_lista']:
-        for rec in datos['recomendaciones_lista']:
-            pdf.set_x(15)
-            pdf.multi_cell(0, 5, s(f"• {rec}"))
-    else:
-        pdf.cell(5)
-        pdf.cell(0, 5, s("Ninguna."), 0, 1, "L")
-    pdf.ln(4)
-    
-    # Observaciones
-    pdf.set_font("Arial", "B", 10)
-    pdf.set_text_color(*primary_color)
-    pdf.cell(32, 5, s("OBSERVACIONES:"), 0, 0, "L")
-    pdf.set_font("Arial", "", 10)
-    pdf.set_text_color(*dark_neutral)
-    obs_text = datos['observaciones'] if datos['observaciones'] else "Ninguna."
-    pdf.multi_cell(0, 5, s(obs_text))
-    pdf.ln(2)
-    
-    # Remisiones
-    pdf.set_font("Arial", "B", 10)
-    pdf.set_text_color(*primary_color)
-    pdf.cell(26, 5, s("REMISIONES:"), 0, 0, "L")
-    pdf.set_font("Arial", "", 10)
-    pdf.set_text_color(*dark_neutral)
-    rem_text = datos['remisiones'] if datos['remisiones'] else "No presenta remisiones."
-    pdf.multi_cell(0, 5, s(rem_text))
-    pdf.ln(8)
-    
-    if pdf.get_y() > 220:
-        pdf.add_page()
+    # 1. Intentar conversión por LibreOffice (Entornos Linux / Streamlit Cloud)
+    try:
+        subprocess.run([
+            "libreoffice", "--headless", "--convert-to", "pdf", 
+            "--outdir", os.path.dirname(temp_docx_path), temp_docx_path
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
         
-    if firma_file:
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_img:
-                temp_img.write(firma_file.getvalue())
-                temp_path = temp_img.name
-            pdf.image(temp_path, x=15, y=pdf.get_y(), w=42)
-            pdf.ln(18)
-            os.unlink(temp_path)
-        except Exception:
-            pdf.ln(10)
-    else:
-        pdf.ln(10)
-        
-    pdf.set_font("Arial", "B", 10)
-    pdf.set_text_color(*primary_color)
-    pdf.cell(0, 5, s("VÍCTOR ALONSO MORENO CASAS"), 0, 1, "L")
-    pdf.set_font("Arial", "", 9)
-    pdf.set_text_color(*dark_neutral)
-    pdf.cell(0, 4, s("Coordinador SST"), 0, 1, "L")
-    pdf.cell(0, 4, s("JER S.A."), 0, 1, "L")
-    
-    pdf_out = pdf.output()
-    if isinstance(pdf_out, str):
-        return pdf_out.encode('latin1')
-    return bytes(pdf_out)
+        if os.path.exists(pdf_path):
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+            os.unlink(temp_docx_path)
+            os.unlink(pdf_path)
+            return pdf_bytes, True
+    except Exception:
+        pass
+
+    # 2. Intentar conversión por docx2pdf (Sistemas Windows/Mac Locales)
+    try:
+        from docx2pdf import convert
+        convert(temp_docx_path, pdf_path)
+        if os.path.exists(pdf_path):
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+            os.unlink(temp_docx_path)
+            os.unlink(pdf_path)
+            return pdf_bytes, True
+    except Exception:
+        pass
+
+    # Limpiar archivos si hubo fallos
+    if os.path.exists(temp_docx_path):
+        os.unlink(temp_docx_path)
+    return None, False
 
 # --- GENERADOR DE HTML COMPATIBLE ---
 def generar_html_vista(datos, consecutivo_num, lugar, fecha):
@@ -898,6 +798,7 @@ def generar_html_vista(datos, consecutivo_num, lugar, fecha):
         <ul>{"".join([f"<li>{ex}</li>" for ex in datos['examenes_lista']])}</ul>
         <p><strong>Recomendaciones:</strong></p>
         <ul>{"".join([f"<li>{rec}</li>" for rec in datos['recomendaciones_lista']])}</ul>
+        <p><strong>Programa de Vigilancia:</strong> {datos.get('vigilancia_programa', 'NINGUNO')}</p>
         <p><strong>observaciones:</strong> {datos['observaciones']}</p>
         <p><strong>remisiones:</strong> {datos['remisiones']}</p><br>
         <p>Atentamente,</p><br>
@@ -974,6 +875,10 @@ with col_der:
         
         examenes_realizados = st.text_area("Exámenes Realizados:", value="\n".join(doc_actual["examenes_lista"]))
         recom_medicas = st.text_area("Recomendaciones por Examen:", value="\n".join(doc_actual["recomendaciones_lista"]), height=130)
+        
+        # UI: Campo editable del Programa de Vigilancia Epidemiológica antes de generar archivos
+        programa_vigilancia = st.text_input("Programa de Vigilancia Epidemiológica (PVE):", value=doc_actual.get("vigilancia_programa", "NINGUNO"))
+        
         observaciones = st.text_area("Observaciones:", value=doc_actual["observaciones"])
         remisiones = st.text_input("Remisiones (Escribe 'No' para marcarlo negativo):", value=doc_actual["remisiones"])
 
@@ -981,7 +886,8 @@ with col_der:
             "nombre": nombre_persona, "cargo": cargo_persona, "tipo_examen": tipo_examen,
             "examenes_lista": [l.strip() for l in examenes_realizados.split('\n') if l.strip()],
             "recomendaciones_lista": [l.strip() for l in recom_medicas.split('\n') if l.strip()],
-            "observaciones": observaciones, "remisiones": remisiones
+            "observaciones": observaciones, "remisiones": remisiones,
+            "vigilancia_programa": programa_vigilancia
         })
 
         st.markdown("---")
@@ -998,13 +904,22 @@ with col_der:
                             st.success(f"🟢 Guardado en Sheets (Consecutivo: {consec_num})")
                             st.download_button("📥 Descargar Word (.docx)", data=bytes_word, file_name=f"Informe_{nombre_persona.replace(' ','_')}.docx")
                     elif "PDF" in formato_salida:
-                        if fpdf_disponible:
-                            _, consec_num = generar_word_unico(doc_actual, lugar, fecha, template_uploaded, None)
-                            bytes_pdf = generar_pdf_nativo(doc_actual, consec_num, lugar, fecha, firma_file)
+                        bytes_word, consec_num = generar_word_unico(doc_actual, lugar, fecha, template_uploaded, firma_file)
+                        
+                        # Compilar el PDF convirtiendo directamente el Word con toda la estructura de la plantilla oficial
+                        bytes_pdf, exito = convertir_docx_a_pdf(bytes_word)
+                        if exito:
                             st.success(f"🟢 Guardado en Sheets (Consecutivo: {consec_num})")
                             st.download_button("📥 Descargar PDF Oficial (.pdf)", data=bytes_pdf, file_name=f"Informe_{nombre_persona.replace(' ','_')}.pdf", mime="application/pdf")
                         else:
-                            st.error("⚠️ La librería fpdf2 no está instalada. Elige 'Microsoft Word' o 'Impresión Web' como alternativa.")
+                            st.error("⚠️ No se pudo compilar el PDF de manera directa para coincidir con el Word.")
+                            st.info("""
+                            **Para activar la conversión idéntica en Word-to-PDF de forma automática:**
+                            1. **En la Nube (GitHub/Streamlit Cloud):** Asegúrate de tener un archivo `packages.txt` con la línea `libreoffice` para que el servidor convierta el archivo.
+                            2. **En tu Computadora (Local):** Ejecuta `pip install docx2pdf` en tu consola.
+                            
+                            *Como alternativa temporal, puedes descargar tu reporte en formato **Microsoft Word (.docx)** y guardarlo como PDF directamente desde el programa Word.*
+                            """)
                     else:
                         _, consec_num = generar_word_unico(doc_actual, lugar, fecha, template_uploaded, None)
                         html_out = generar_html_vista(doc_actual, consec_num, lugar, fecha)
@@ -1014,20 +929,22 @@ with col_der:
         with col_gen2:
             if len(st.session_state.documentos) > 1:
                 if st.button("📦 Generar TODOS los Colaboradores (ZIP)"):
-                    with st.spinner("Conectando en lote con la nube..."):
+                    with st.spinner("Generando lote masivo..."):
                         zip_buffer = io.BytesIO()
                         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                             for filename, datos_trab in st.session_state.documentos.items():
+                                bytes_word, consec_num = generar_word_unico(datos_trab, lugar, fecha, template_uploaded, firma_file)
+                                
                                 if "Word" in formato_salida:
-                                    bytes_word, consec_num = generar_word_unico(datos_trab, lugar, fecha, template_uploaded, firma_file)
-                                    if bytes_word:
+                                    zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.docx", bytes_word)
+                                elif "PDF" in formato_salida:
+                                    bytes_pdf, exito = convertir_docx_a_pdf(bytes_word)
+                                    if exito:
+                                        zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.pdf", bytes_pdf)
+                                    else:
+                                        # Si el motor de conversión a PDF no está listo, guarda el docx para no romper el ZIP
                                         zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.docx", bytes_word)
-                                elif "PDF" in formato_salida and fpdf_disponible:
-                                    _, consec_num = generar_word_unico(datos_trab, lugar, fecha, template_uploaded, None)
-                                    bytes_pdf = generar_pdf_nativo(datos_trab, consec_num, lugar, fecha, firma_file)
-                                    zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.pdf", bytes_pdf)
                                 else:
-                                    _, consec_num = generar_word_unico(datos_trab, lugar, fecha, template_uploaded, None)
                                     html_out = generar_html_vista(datos_trab, consec_num, lugar, fecha)
                                     zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.html", html_out.encode('utf-8'))
                                     
