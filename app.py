@@ -15,7 +15,7 @@ import io
 import zipfile
 import tempfile
 
-# Intentar importar FPDF para generación de PDF nativo sin errores
+# Intentar importar FPDF para generación de PDF nativo
 try:
     from fpdf import FPDF
     fpdf_disponible = True
@@ -234,7 +234,7 @@ def corregir_ortografia_sst(texto):
     diccionario_SST = {
         r'\brealziado\b': 'realizado', r'\brealziados\b': 'realizados',
         r'\baudiometria\b': 'audiometría', r'\bvisiometria\b': 'visiometría',
-        r'\bespirometria\b': 'espirometría', r'\boptometria\b': 'optometría',  # CORREGIDO: Espirometría escrita correctamente
+        r'\bespirometria\b': 'espirometría', r'\boptometria\b': 'optometría',  # CORREGIDO: "espirometría" ortografía perfecta
         r'\bfisica\b': 'física', r'\bmedico\b': 'médico', r'\bperiodico\b': 'periódico',
         r'\bproteccion\b': 'protección', r'\balimentacion\b': 'alimentación',
         r'\brecomendacion\b': 'recomendación', r'\bperfil\s+lipidico\b': 'perfil lipídico',
@@ -254,26 +254,24 @@ def es_vacio_o_negativo(texto):
     if not texto: return True
     return texto.strip().lower().strip(" .-_/ '\"") in ["no", "ninguna", "ninguno", "no registra", "sin remisiones", "normal", "n/a", "sin remisión"]
 
-# --- FILTRADO INTELIGENTE DE COLUMNAS DEL PDF ---
+# --- FILTRADO INTELIGENTE DE RUIDO DE ESTADOS CLÍNICOS ---
 def es_vacio_o_estado(texto):
     if not texto: return True
     t_clean = texto.strip().upper()
     
-    # Vocabulario de estados clínicos irrelevantes que no deben tratarse como recomendaciones
-    palabras_estado = {
+    # Quitar signos de puntuación comunes para una comparación limpia
+    t_clean_norm = re.sub(r'[^A-ZÁÉÍÓÚÑ\s]', '', t_clean).strip()
+    t_clean_norm = re.sub(r'\s+', ' ', t_clean_norm)
+    
+    frases_estado = {
         "REALIZADO", "REALZIADO", "SIN ALTERACIONES", "NORMAL", "SANO", "NEGATIVO", 
-        "NO REGISTRA", "N/A", "SIN REMISIONES", "SIN REMISIÓN", "VISUAL", "CARDIOVASCULAR", 
+        "NO REGISTRA", "NA", "SIN REMISIONES", "SIN REMISIÓN", "VISUAL", "CARDIOVASCULAR", 
         "DME", "OSTEOMUSCULAR", "AUDITIVO", "RESPIRATORIO", "SVE", "SISTEMA", "VIGILANCIA",
         "SANO Y SIN ALTERACIONES", "NINGUNO", "NINGUNA", "NO PRESENTAS", "NO PRESENTA", 
-        "NO REGISTRA RECOMENDACIONES", "NORMALES"
+        "NO REGISTRA RECOMENDACIONES", "NORMALES", "NORMAL", "SIN ALTERACION"
     }
     
-    t_clean_nopunct = re.sub(r'[^A-ZÁÉÍÓÚÑ\s]', ' ', t_clean).strip()
-    palabras = [p for p in t_clean_nopunct.split() if p]
-    
-    if not palabras:
-        return True
-    if all(p in palabras_estado for p in palabras):
+    if t_clean_norm in frases_estado:
         return True
     if len(texto.strip()) <= 3:
         return True
@@ -285,7 +283,24 @@ def limpiar_campo(texto):
     partes = re.split(r'\b(Teléfono|Telefono|Tel|C\.C|CC|Documento|Cedula|Cargo|Fecha)\b', texto, flags=re.IGNORECASE)
     return re.sub(r'[:\-,_]+', '', partes[0]).strip().title()
 
-# --- ANALIZADOR INTELIGENTE DE EXTRACCIÓN ---
+# --- ELIMINACIÓN DE RUIDO HORIZONTAL DE COLUMNAS ---
+def limpiar_linea_ruido_lateral(linea):
+    # Si la línea tiene un bloque de espacios grandes seguido de una palabra de ruido de columna al final (ej: "   Visual")
+    patron_ruido = r'\s{2,}(VISUAL|DME|CARDIOVASCULAR|SVE|AUDITIVO|RESPIRATORIO|SISTEMA|VIGILANCIA)\s*$'
+    linea_limpia = re.sub(patron_ruido, '', linea, flags=re.IGNORECASE)
+    return linea_limpia.strip()
+
+def limpiar_ruido_columnas_final(texto):
+    if not texto: return ""
+    patrones_ruido = [
+        r'\bvisual\b', r'\bdme\b', r'\bcardiovascular\b', r'\bsve\b', 
+        r'\bauditivo\b', r'\brespiratorio\b', r'\bsistema\b', r'\bvigilancia\b'
+    ]
+    for patron in patrones_ruido:
+        texto = re.sub(patron + r'\s*$', '', texto, flags=re.IGNORECASE)
+    return texto.strip(" :-,_/")
+
+# --- EXTRACTOR INTELIGENTE MULTILÍNEA DE RECOMENDACIONES ---
 def analizar_pdf_inteligente(texto):
     datos = {
         "nombre": "", "cargo": "", "tipo_examen": "PERIODICO",
@@ -327,51 +342,55 @@ def analizar_pdf_inteligente(texto):
     examenes_detectados = []
     recoms_raw_dict = {}
     current_exam = None
+    exam_text_accumulator = ""
     in_exams_section = True
 
     lineas = texto.split('\n')
     for linea in lineas:
-        linea_upper = linea.upper().strip()
+        linea_limpia = limpiar_linea_ruido_lateral(linea)
+        linea_upper = linea_limpia.upper().strip()
         
         if any(stop in linea_upper for stop in ["OBSERVACIONES:", "OBSERVACION:", "REMISIONES:", "SISTEMA DE VIGILANCIA"]):
             in_exams_section = False
-            current_exam = None
-            continue
-            
-        if in_exams_section:
-            # Separar por espacio doble para ignorar las columnas de estado de los laterales
-            columnas = [col.strip() for col in re.split(r'\s{2,}', linea) if col.strip()]
-            if not columnas:
-                continue
+            if current_exam:
+                recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "") + " " + exam_text_accumulator
+                current_exam = None
                 
-            first_col_upper = columnas[0].upper()
+        if in_exams_section:
             matched_key = None
             for key in sorted(EXAMS_MAP.keys(), key=len, reverse=True):
-                if key in first_col_upper and first_col_upper.find(key) < 15:
+                if key in linea_upper and linea_upper.find(key) < 15:
                     matched_key = key
                     break
             
             if matched_key:
+                if current_exam:
+                    recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "") + " " + exam_text_accumulator
+                
                 current_exam = EXAMS_MAP[matched_key]
                 if current_exam not in examenes_detectados:
                     examenes_detectados.append(current_exam)
                 
-                # Extraer solo las columnas de recomendaciones si existen en la misma línea
-                recoms_raw_dict[current_exam] = " ".join(columnas[1:])
+                idx = linea_upper.find(matched_key) + len(matched_key)
+                exam_text_accumulator = linea_limpia[idx:].strip(" :-,_/")
             else:
-                if current_exam and linea.strip():
-                    texto_valido = max(columnas, key=len)
-                    if not (columnas[0].isupper() and len(columnas[0]) > 5):
-                        recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "") + " " + texto_valido
+                if current_exam and linea_limpia.strip():
+                    exam_text_accumulator += " " + linea_limpia.strip()
+
+    if current_exam:
+        recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "") + " " + exam_text_accumulator
 
     recoms_por_examen = []
     pve_detectados = set()
 
     for exam in examenes_detectados:
         rec_part = recoms_raw_dict.get(exam, "").strip()
+        rec_part = re.sub(r'\s+', ' ', rec_part)
+        rec_part = limpiar_ruido_columnas_final(rec_part)
         
         if not es_vacio_o_estado(rec_part):
             parts = re.split(r'//|;|\b\d+\.|\b\d+\-', rec_part)
+            
             valid_parts = []
             for p in parts:
                 p_clean = p.strip(" .-_/()[]")
@@ -395,28 +414,23 @@ def analizar_pdf_inteligente(texto):
     datos["recomendaciones_lista"] = recoms_por_examen
     datos["vigilancia_lista"] = list(pve_detectados)
 
-    def limpiar_linea_columnas(linea):
-        columnas = [col.strip() for col in re.split(r'\s{2,}', linea) if col.strip()]
-        if not columnas: return ""
-        if len(columnas) == 1: return columnas[0]
-        return max(columnas, key=len)
-
     def extraer_seccion_limpia(texto_completo, palabras_inicio, palabras_fin):
         seccion = []
         dentro = False
         for l in texto_completo.split('\n'):
-            l_upper = l.upper().strip()
+            l_limpia = limpiar_linea_ruido_lateral(l)
+            l_upper = l_limpia.upper().strip()
             if not dentro:
                 if any(h in l_upper for h in palabras_inicio):
                     dentro = True
                     for h in palabras_inicio:
                         if h in l_upper:
-                            resto = l[l_upper.find(h) + len(h):].strip(" :-,_")
-                            if resto: seccion.append(limpiar_linea_columnas(resto))
+                            resto = l_limpia[l_upper.find(h) + len(h):].strip(" :-,_")
+                            if resto: seccion.append(resto)
                             break
             else:
                 if any(h in l_upper for h in palabras_fin): break
-                seccion.append(limpiar_linea_columnas(l))
+                seccion.append(l_limpia)
         return "\n".join([s for s in seccion if s]).strip()
 
     datos["observaciones"] = a_caso_oracion(extraer_seccion_limpia(texto, ["OBSERVACIONES:"], ["RECOMENDACIONES", "REMISIONES"]))
@@ -426,189 +440,14 @@ def analizar_pdf_inteligente(texto):
 
     return datos
 
-# --- MOTOR DE REEMPLAZO 100% PRESERVADOR DE ESTILOS Y TIPOGRAFÍAS ---
-def replace_text_preserving_style(paragraph, placeholder, replacement_text):
-    if placeholder not in paragraph.text:
-        return False
-    
-    # 1. Capturar propiedades de estilo de la primera corrida de texto original
-    if paragraph.runs:
-        first_run = paragraph.runs[0]
-        p_font_name = first_run.font.name or "Arial"
-        p_font_size = first_run.font.size or Pt(11)
-        p_color = first_run.font.color.rgb if first_run.font.color else None
-        p_bold = first_run.bold
-        p_italic = first_run.italic
-    else:
-        p_font_name = "Arial"
-        p_font_size = Pt(11)
-        p_color = None
-        p_bold = False
-        p_italic = False
-    
-    # 2. Reemplazar texto del párrafo
-    new_text = paragraph.text.replace(placeholder, replacement_text)
-    paragraph.text = ""  # Limpia de forma segura todas las corridas
-    
-    # 3. Crear nueva corrida con el estilo exacto de tu plantilla Word
-    run = paragraph.add_run(new_text)
-    run.font.name = p_font_name
-    run.font.size = p_font_size
-    run.bold = p_bold
-    run.italic = p_italic
-    if p_color:
-        run.font.color.rgb = p_color
-    return True
-
-# --- INSERCIÓN DE VIÑETAS PRESERVANDO LA TIPOGRAFÍA ---
-def insert_bullets_preserving_style(parent_container, paragraph, items_list):
-    if not paragraph.runs:
-        p_font_name = "Arial"
-        p_font_size = Pt(11)
-        p_color = None
-        p_bold = False
-        p_italic = False
-    else:
-        first_run = paragraph.runs[0]
-        p_font_name = first_run.font.name or "Arial"
-        p_font_size = first_run.font.size or Pt(11)
-        p_color = first_run.font.color.rgb if first_run.font.color else None
-        p_bold = first_run.bold
-        p_italic = first_run.italic
-
-    paragraph.text = ""
-    if not items_list:
-        run = paragraph.add_run("Ninguno.")
-        run.font.name = p_font_name
-        run.font.size = p_font_size
-        run.bold = p_bold
-        run.italic = p_italic
-        if p_color: run.font.color.rgb = p_color
-        return
-
-    # Inserción de la primera viñeta
-    run = paragraph.add_run("• " + items_list[0])
-    run.font.name = p_font_name
-    run.font.size = p_font_size
-    run.bold = p_bold
-    run.italic = p_italic
-    if p_color: run.font.color.rgb = p_color
-
-    # Inserción XML nativa de los párrafos de viñetas siguientes para heredar la tabla original
-    current_p = paragraph
-    for item in items_list[1:]:
-        new_p_element = OxmlElement('w:p')
-        current_p._p.addnext(new_p_element)
-        
-        new_para = Paragraph(new_p_element, parent_container)
-        new_para.paragraph_format.alignment = paragraph.paragraph_format.alignment
-        new_para.paragraph_format.line_spacing = paragraph.paragraph_format.line_spacing
-        new_para.paragraph_format.space_after = paragraph.paragraph_format.space_after
-        new_para.paragraph_format.space_before = paragraph.paragraph_format.space_before
-        new_para.paragraph_format.left_indent = Inches(0.25)
-        
-        run_new = new_para.add_run("• " + item)
-        run_new.font.name = p_font_name
-        run_new.font.size = p_font_size
-        run_new.bold = p_bold
-        run_new.italic = p_italic
-        if p_color: run_new.font.color.rgb = p_color
-        
-        current_p = new_para
-
-# --- REEMPLAZO DE RECOMENDACIONES EN FORMATO ESTRUCTURADO ---
-def replace_recommendations_placeholder(parent_container, paragraph, recom_list, pve_list):
-    if "{{Recomendaciones médicas}}" not in paragraph.text:
-        return False
-        
-    if paragraph.runs:
-        first_run = paragraph.runs[0]
-        p_font_name = first_run.font.name or "Arial"
-        p_font_size = first_run.font.size or Pt(11)
-        p_color = first_run.font.color.rgb if first_run.font.color else None
-    else:
-        p_font_name = "Arial"
-        p_font_size = Pt(11)
-        p_color = None
-
-    # Reconstruye el inicio de línea con el diseño exacto de tu Word
-    paragraph.text = ""
-    run_lbl = paragraph.add_run("Recomendaciones: ")
-    run_lbl.bold = True
-    run_lbl.font.name = p_font_name
-    run_lbl.font.size = p_font_size
-    if p_color: run_lbl.font.color.rgb = p_color
-        
-    combined_items = []
-    for r in recom_list:
-        combined_items.append(r)
-    for pve in pve_list:
-        combined_items.append(f"Ingresar al Sistema de Vigilancia Epidemiológica para {pve}.")
-        
-    if not combined_items:
-        run_none = paragraph.add_run("Ninguna.")
-        run_none.font.name = p_font_name
-        run_none.font.size = p_font_size
-        if p_color: run_none.font.color.rgb = p_color
-        return True
-    
-    # Inyección consecutiva de viñetas estructuradas
-    current_p = paragraph
-    for item in combined_items:
-        new_p_element = OxmlElement('w:p')
-        current_p._p.addnext(new_p_element)
-        
-        new_para = Paragraph(new_p_element, parent_container)
-        new_para.paragraph_format.alignment = paragraph.paragraph_format.alignment
-        new_para.paragraph_format.line_spacing = paragraph.paragraph_format.line_spacing
-        new_para.paragraph_format.left_indent = Inches(0.25)
-        
-        run_new = new_para.add_run("• " + item)
-        run_new.font.name = p_font_name
-        run_new.font.size = p_font_size
-        if p_color: run_new.font.color.rgb = p_color
-        current_p = new_para
-    return True
-
-# --- REEMPLAZO DE OBSERVACIONES Y REMISIONES MANTENIENDO FUENTES ---
-def replace_inline_label_placeholder(paragraph, label, placeholder, value):
-    if placeholder not in paragraph.text:
-        return False
-    if paragraph.runs:
-        first_run = paragraph.runs[0]
-        p_font_name = first_run.font.name or "Arial"
-        p_font_size = first_run.font.size or Pt(11)
-        p_color = first_run.font.color.rgb if first_run.font.color else None
-    else:
-        p_font_name = "Arial"
-        p_font_size = Pt(11)
-        p_color = None
-        
-    paragraph.text = ""
-    run_lbl = paragraph.add_run(label)
-    run_lbl.bold = True
-    run_lbl.font.name = p_font_name
-    run_lbl.font.size = p_font_size
-    if p_color: run_lbl.font.color.rgb = p_color
-        
-    val_clean = value.strip() if value else "Ninguna."
-    if val_clean.lower() in ["no", "ninguna", "ninguno", "normal", "n/a", "no registra", "sin observaciones"]:
-        val_clean = "Ninguna."
-        
-    run_val = paragraph.add_run(val_clean)
-    run_val.font.name = p_font_name
-    run_val.font.size = p_font_size
-    if p_color: run_val.font.color.rgb = p_color
-    return True
-
-# --- APLICACIÓN DE NEGRITAS DINÁMICAS (AL CORREO/CUERPO) ---
+# --- FORMATEADOR DINÁMICO DE NEGRITAS EN EL CUERPO ---
 def aplicar_negrita_dinamica_cuerpo(paragraph, tipo_examen):
     texto_parrafo = paragraph.text
     if "Según los lineamientos del programa de medicina preventiva" not in texto_parrafo:
         return
         
     paragraph.text = "" 
-    p1 = "Según los lineamientos del programa de medicina preventiva y del trabajo de JER S.A; se hace entrega de las recomendaciones BIENVENIDAS por el Proveedor de servicios de Exámenes Médico Ocupacionales ("
+    p1 = "Según los lineamientos del programa de medicina preventiva y del trabajo de JER S.A; se hace entrega de las recomendaciones establecidas por el Proveedor de servicios de Exámenes Médico Ocupacionales ("
     paragraph.add_run(p1)
     
     opciones = [
@@ -628,6 +467,184 @@ def aplicar_negrita_dinamica_cuerpo(paragraph, tipo_examen):
                 
     paragraph.add_run(")")
 
+# --- MOTOR DE REEMPLAZO QUE PRESERVA LA TIPOGRAFÍA ORIGINAL ---
+def replace_placeholder_in_paragraph_runs(paragraph, placeholder, value):
+    if placeholder not in paragraph.text:
+        return False
+    
+    # Intentar reemplazo directo en las corridas individuales (conservación total)
+    replaced = False
+    for run in paragraph.runs:
+        if placeholder in run.text:
+            run.text = run.text.replace(placeholder, value)
+            replaced = True
+            
+    # Si python-docx fragmentó el placeholder en múltiples corridas:
+    if not replaced:
+        font_name = "Arial"
+        font_size = Pt(11)
+        bold = False
+        italic = False
+        color = None
+        
+        if paragraph.runs:
+            for r in paragraph.runs:
+                if r.text.strip():
+                    font_name = r.font.name or font_name
+                    font_size = r.font.size or font_size
+                    bold = r.bold if r.bold is not None else bold
+                    italic = r.italic if r.italic is not None else italic
+                    color = r.font.color.rgb if r.font.color else color
+                    break
+        
+        full_text = paragraph.text.replace(placeholder, value)
+        paragraph.text = ""
+        new_run = paragraph.add_run(full_text)
+        new_run.font.name = font_name
+        new_run.font.size = font_size
+        new_run.bold = bold
+        new_run.italic = italic
+        if color:
+            new_run.font.color.rgb = color
+    return True
+
+# --- INSERCIÓN DE VIÑETAS PRESERVANDO LA TIPOGRAFÍA ORIGINAL ---
+def insert_bullets_in_placeholder(parent_container, paragraph, items_list):
+    if not paragraph.runs:
+        font_name = "Arial"
+        font_size = Pt(11)
+        bold = False
+        color = None
+    else:
+        first_run = paragraph.runs[0]
+        font_name = first_run.font.name or "Arial"
+        font_size = first_run.font.size or Pt(11)
+        bold = first_run.bold
+        color = first_run.font.color.rgb if first_run.font.color else None
+
+    paragraph.text = ""
+    if not items_list:
+        run = paragraph.add_run("Ninguno.")
+        run.font.name = font_name
+        run.font.size = font_size
+        run.bold = bold
+        if color: run.font.color.rgb = color
+        return
+
+    # Escribir la primera viñeta en el renglón actual
+    run = paragraph.add_run("• " + items_list[0])
+    run.font.name = font_name
+    run.font.size = font_size
+    run.bold = bold
+    if color: run.font.color.rgb = color
+
+    # Crear viñetas hijas de forma nativa en Word
+    current_p = paragraph
+    for item in items_list[1:]:
+        new_p_element = OxmlElement('w:p')
+        current_p._p.addnext(new_p_element)
+        
+        new_para = Paragraph(new_p_element, parent_container)
+        new_para.paragraph_format.alignment = paragraph.paragraph_format.alignment
+        new_para.paragraph_format.line_spacing = paragraph.paragraph_format.line_spacing
+        new_para.paragraph_format.space_after = paragraph.paragraph_format.space_after
+        new_para.paragraph_format.space_before = paragraph.paragraph_format.space_before
+        new_para.paragraph_format.left_indent = paragraph.paragraph_format.left_indent or Inches(0.25)
+        
+        run_new = new_para.add_run("• " + item)
+        run_new.font.name = font_name
+        run_new.font.size = font_size
+        run_new.bold = bold
+        if color: run_new.font.color.rgb = color
+        
+        current_p = new_para
+
+# --- INSERCIÓN DE RECOMENDACIONES + PVE COMBINADAS ---
+def insert_recommendations_in_placeholder(parent_container, paragraph, recom_list, pve_list):
+    combined_items = []
+    for r in recom_list:
+        combined_items.append(r)
+    for pve in pve_list:
+        combined_items.append(f"Ingresar al Sistema de Vigilancia Epidemiológica para {pve}.")
+
+    if paragraph.runs:
+        font_name = paragraph.runs[0].font.name or "Arial"
+        font_size = paragraph.runs[0].font.size or Pt(11)
+        color = paragraph.runs[0].font.color.rgb if paragraph.runs[0].font.color else None
+    else:
+        font_name = "Arial"
+        font_size = Pt(11)
+        color = None
+
+    paragraph.text = ""
+    run_lbl = paragraph.add_run("Recomendaciones: ")
+    run_lbl.bold = True
+    run_lbl.font.name = font_name
+    run_lbl.font.size = font_size
+    if color: run_lbl.font.color.rgb = color
+
+    if not combined_items:
+        run_none = paragraph.add_run("Ninguna.")
+        run_none.font.name = font_name
+        run_none.font.size = font_size
+        if color: run_none.font.color.rgb = color
+        return
+
+    # Primera viñeta va al lado del título
+    run_first = paragraph.add_run("• " + combined_items[0])
+    run_first.font.name = font_name
+    run_first.font.size = font_size
+    if color: run_first.font.color.rgb = color
+
+    # Demás viñetas en renglones inferiores
+    current_p = paragraph
+    for item in combined_items[1:]:
+        new_p_element = OxmlElement('w:p')
+        current_p._p.addnext(new_p_element)
+        
+        new_para = Paragraph(new_p_element, parent_container)
+        new_para.paragraph_format.alignment = paragraph.paragraph_format.alignment
+        new_para.paragraph_format.line_spacing = paragraph.paragraph_format.line_spacing
+        new_para.paragraph_format.left_indent = Inches(0.25)
+        
+        run_new = new_para.add_run("• " + item)
+        run_new.font.name = font_name
+        run_new.font.size = font_size
+        if color: run_new.font.color.rgb = color
+        
+        current_p = new_para
+
+# --- INSERCIÓN DE OBSERVACIONES Y REMISIONES CON FORMATO ---
+def replace_label_placeholder(paragraph, label_text, placeholder, value):
+    if placeholder not in paragraph.text:
+        return False
+        
+    if paragraph.runs:
+        font_name = paragraph.runs[0].font.name or "Arial"
+        font_size = paragraph.runs[0].font.size or Pt(11)
+        color = paragraph.runs[0].font.color.rgb if paragraph.runs[0].font.color else None
+    else:
+        font_name = "Arial"
+        font_size = Pt(11)
+        color = None
+        
+    paragraph.text = ""
+    run_lbl = paragraph.add_run(label_text)
+    run_lbl.bold = True
+    run_lbl.font.name = font_name
+    run_lbl.font.size = font_size
+    if color: run_lbl.font.color.rgb = color
+    
+    val_clean = value.strip() if value else "Ninguna."
+    if es_vacio_o_negativo(val_clean):
+        val_clean = "Ninguna."
+        
+    run_val = paragraph.add_run(val_clean)
+    run_val.font.name = font_name
+    run_val.font.size = font_size
+    if color: run_val.font.color.rgb = color
+    return True
+
 def obtener_siguiente_consecutivo_local():
     val = obtener_config("ultimo_consecutivo_local")
     return int(val) + 1 if val else 1
@@ -637,7 +654,7 @@ def incrementar_consecutivo_local():
     guardar_config("ultimo_consecutivo_local", str(next_num))
     return f"SST-2026-{next_num}"
 
-# --- CONSTRUCTOR DE DOCUMENTO ÚNICO INTELIGENTE ---
+# --- CONSTRUCTOR DE DOCUMENTO ÚNICO INTELIGENTE (PRODUCCIÓN) ---
 def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_file):
     if template_uploaded:
         doc_word = Document(template_uploaded)
@@ -671,39 +688,39 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
         "{{CARGO DE LA PERSONA}}": datos_trabajador["cargo"].upper()
     }
 
-    # Helper para procesar un párrafo según su contenedor (Documento o Celda)
+    # Procesar un párrafo de forma estructurada según su ubicación
     def procesar_parrafo(p, container):
         if "{{LISTA DE EXAMENES REALIZADOS}}" in p.text:
-            insert_bullets_preserving_style(container, p, datos_trabajador["examenes_lista"])
-            return
+            insert_bullets_in_placeholder(container, p, datos_trabajador["examenes_lista"])
+            return True
         if "{{Recomendaciones médicas}}" in p.text:
-            replace_recommendations_placeholder(container, p, datos_trabajador["recomendaciones_lista"], datos_trabajador["vigilancia_lista"])
-            return
+            insert_recommendations_in_placeholder(container, p, datos_trabajador["recomendaciones_lista"], datos_trabajador["vigilancia_lista"])
+            return True
         if "{{Observaciones}}" in p.text:
-            replace_inline_label_placeholder(p, "Observaciones: ", "{{Observaciones}}", datos_trabajador["observaciones"])
-            return
+            replace_label_placeholder(p, "Observaciones: ", "{{Observaciones}}", datos_trabajador["observaciones"])
+            return True
         if "{{Remisiones}}" in p.text:
-            replace_inline_label_placeholder(p, "Remisiones: ", "{{Remisiones}}", datos_trabajador["remisiones"])
-            return
+            replace_label_placeholder(p, "Remisiones: ", "{{Remisiones}}", datos_trabajador["remisiones"])
+            return True
             
         for k, v in simple_replacements.items():
             if k in p.text:
-                replace_text_preserving_style(p, k, v)
+                replace_placeholder_in_paragraph_runs(p, k, v)
                 
         aplicar_negrita_dinamica_cuerpo(p, datos_trabajador["tipo_examen"])
 
-    # Buscar en los párrafos raíz del documento
+    # Escaneo en párrafos del Documento Principal
     for p in list(doc_word.paragraphs):
         procesar_parrafo(p, doc_word)
 
-    # Buscar en todos los párrafos dentro de tablas (Estructura de tu formato)
+    # Escaneo en las tablas estructuradas de tu plantilla Word
     for table in doc_word.tables:
         for row in table.rows:
             for cell in row.cells:
                 for p in list(cell.paragraphs):
                     procesar_parrafo(p, cell)
                 
-                # Inserción de firma digital
+                # Buscar ubicación de firma
                 idx_victor = -1
                 for idx, p in enumerate(cell.paragraphs):
                     if "VÍCTOR ALONSO MORENO CASAS" in p.text:
@@ -719,7 +736,7 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
     doc_word.save(b_io)
     return b_io.getvalue(), consecutivo_final
 
-# --- PROCESO DE CONTROL DE TEXTO SEGURO PARA PDF (LATIN-1) ---
+# --- LIMPIEZA DE CARACTERES ESPECIALES PARA PDF (LATIN-1) ---
 def clean_pdf_str(text):
     if not text: return ""
     replacements = {
@@ -737,13 +754,12 @@ def generar_pdf_nativo(datos, consecutivo_num, lugar, fecha, firma_file):
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    primary_color = (31, 78, 121)  # Azul corporativo #1f4e79
+    primary_color = (31, 78, 121)
     dark_neutral = (40, 40, 40)
     
     def s(txt):
         return clean_pdf_str(txt)
     
-    # Encabezado estructurado
     pdf.set_fill_color(240, 244, 248)
     pdf.rect(10, 10, 190, 20, "F")
     
@@ -798,7 +814,6 @@ def generar_pdf_nativo(datos, consecutivo_num, lugar, fecha, firma_file):
     pdf.multi_cell(0, 5, s(body_text))
     pdf.ln(4)
     
-    # Lista de Exámenes
     pdf.set_font("Arial", "B", 10)
     pdf.set_text_color(*primary_color)
     pdf.cell(0, 6, s("EXÁMENES REALIZADOS:"), 0, 1, "L")
@@ -809,7 +824,6 @@ def generar_pdf_nativo(datos, consecutivo_num, lugar, fecha, firma_file):
         pdf.cell(0, 5, s(f"- {ex}"), 0, 1, "L")
     pdf.ln(4)
     
-    # Lista de Recomendaciones
     pdf.set_font("Arial", "B", 10)
     pdf.set_text_color(*primary_color)
     pdf.cell(0, 6, s("RECOMENDACIONES MÉDICAS:"), 0, 1, "L")
@@ -824,7 +838,6 @@ def generar_pdf_nativo(datos, consecutivo_num, lugar, fecha, firma_file):
         pdf.cell(0, 5, s("Ninguna."), 0, 1, "L")
     pdf.ln(4)
     
-    # Observaciones
     pdf.set_font("Arial", "B", 10)
     pdf.set_text_color(*primary_color)
     pdf.cell(32, 5, s("OBSERVACIONES:"), 0, 0, "L")
@@ -834,7 +847,6 @@ def generar_pdf_nativo(datos, consecutivo_num, lugar, fecha, firma_file):
     pdf.multi_cell(0, 5, s(obs_text))
     pdf.ln(2)
     
-    # Remisiones
     pdf.set_font("Arial", "B", 10)
     pdf.set_text_color(*primary_color)
     pdf.cell(26, 5, s("REMISIONES:"), 0, 0, "L")
@@ -873,7 +885,7 @@ def generar_pdf_nativo(datos, consecutivo_num, lugar, fecha, firma_file):
         return pdf_out.encode('latin1')
     return bytes(pdf_out)
 
-# --- VISTA HTML (OPCIÓN DE RESPALDO) ---
+# --- GENERADOR DE HTML COMPATIBLE ---
 def generar_html_vista(datos, consecutivo_num, lugar, fecha):
     return f"""
     <div style="font-family: Arial, sans-serif; color: #333; padding: 20px; line-height: 1.5; background: white; border: 1px solid #ccc; max-width: 800px; margin: auto;">
@@ -986,7 +998,7 @@ with col_der:
                     if "Word" in formato_salida:
                         bytes_word, consec_num = generar_word_unico(doc_actual, lugar, fecha, template_uploaded, firma_file)
                         if bytes_word:
-                            st.success(f"🟢 Guardado en Sheets (Consecutivo: {con_num if 'consec_num' in locals() else consec_num})")
+                            st.success(f"🟢 Guardado en Sheets (Consecutivo: {consec_num})")
                             st.download_button("📥 Descargar Word (.docx)", data=bytes_word, file_name=f"Informe_{nombre_persona.replace(' ','_')}.docx")
                     elif "PDF" in formato_salida:
                         if fpdf_disponible:
