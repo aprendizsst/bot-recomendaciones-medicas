@@ -234,7 +234,7 @@ def corregir_ortografia_sst(texto):
     diccionario_SST = {
         r'\brealziado\b': 'realizado', r'\brealziados\b': 'realizados',
         r'\baudiometria\b': 'audiometría', r'\bvisiometria\b': 'visiometría',
-        r'\bespirometria\b': 'espirometría', r'\boptometria\b': 'optometría',  # CORREGIDO: "espirometría" ortografía perfecta
+        r'\bespirometria\b': 'espirometría', r'\boptometria\b': 'optometría',
         r'\bfisica\b': 'física', r'\bmedico\b': 'médico', r'\bperiodico\b': 'periódico',
         r'\bproteccion\b': 'protección', r'\balimentacion\b': 'alimentación',
         r'\brecomendacion\b': 'recomendación', r'\bperfil\s+lipidico\b': 'perfil lipídico',
@@ -259,7 +259,6 @@ def es_vacio_o_estado(texto):
     if not texto: return True
     t_clean = texto.strip().upper()
     
-    # Quitar signos de puntuación comunes para una comparación limpia
     t_clean_norm = re.sub(r'[^A-ZÁÉÍÓÚÑ\s]', '', t_clean).strip()
     t_clean_norm = re.sub(r'\s+', ' ', t_clean_norm)
     
@@ -285,7 +284,6 @@ def limpiar_campo(texto):
 
 # --- ELIMINACIÓN DE RUIDO HORIZONTAL DE COLUMNAS ---
 def limpiar_linea_ruido_lateral(linea):
-    # Si la línea tiene un bloque de espacios grandes seguido de una palabra de ruido de columna al final (ej: "   Visual")
     patron_ruido = r'\s{2,}(VISUAL|DME|CARDIOVASCULAR|SVE|AUDITIVO|RESPIRATORIO|SISTEMA|VIGILANCIA)\s*$'
     linea_limpia = re.sub(patron_ruido, '', linea, flags=re.IGNORECASE)
     return linea_limpia.strip()
@@ -300,7 +298,7 @@ def limpiar_ruido_columnas_final(texto):
         texto = re.sub(patron + r'\s*$', '', texto, flags=re.IGNORECASE)
     return texto.strip(" :-,_/")
 
-# --- EXTRACTOR INTELIGENTE MULTILÍNEA DE RECOMENDACIONES ---
+# --- EXTRACTOR INTELIGENTE MULTILÍNEA ---
 def analizar_pdf_inteligente(texto):
     datos = {
         "nombre": "", "cargo": "", "tipo_examen": "PERIODICO",
@@ -472,14 +470,12 @@ def replace_placeholder_in_paragraph_runs(paragraph, placeholder, value):
     if placeholder not in paragraph.text:
         return False
     
-    # Intentar reemplazo directo en las corridas individuales (conservación total)
     replaced = False
     for run in paragraph.runs:
         if placeholder in run.text:
             run.text = run.text.replace(placeholder, value)
             replaced = True
             
-    # Si python-docx fragmentó el placeholder en múltiples corridas:
     if not replaced:
         font_name = "Arial"
         font_size = Pt(11)
@@ -531,14 +527,12 @@ def insert_bullets_in_placeholder(parent_container, paragraph, items_list):
         if color: run.font.color.rgb = color
         return
 
-    # Escribir la primera viñeta en el renglón actual
     run = paragraph.add_run("• " + items_list[0])
     run.font.name = font_name
     run.font.size = font_size
     run.bold = bold
     if color: run.font.color.rgb = color
 
-    # Crear viñetas hijas de forma nativa en Word
     current_p = paragraph
     for item in items_list[1:]:
         new_p_element = OxmlElement('w:p')
@@ -559,13 +553,11 @@ def insert_bullets_in_placeholder(parent_container, paragraph, items_list):
         
         current_p = new_para
 
-# --- INSERCIÓN DE RECOMENDACIONES + PVE COMBINADAS ---
+# --- CORRECCIÓN: INSERCIÓN EXCLUSIVA DE RECOMENDACIONES (IGNORA TEXTOS DE SVE) ---
 def insert_recommendations_in_placeholder(parent_container, paragraph, recom_list, pve_list):
-    combined_items = []
-    for r in recom_list:
-        combined_items.append(r)
-    for pve in pve_list:
-        combined_items.append(f"Ingresar al Sistema de Vigilancia Epidemiológica para {pve}.")
+    # CORRECCIÓN CLAVE: Solo cargamos las recomendaciones médicas puras.
+    # Eliminamos el bucle que inyectaba los textos repetitivos del SVE ("Ingresar al Sistema de Vigilancia...")
+    combined_items = list(recom_list)
 
     if paragraph.runs:
         font_name = paragraph.runs[0].font.name or "Arial"
@@ -590,13 +582,13 @@ def insert_recommendations_in_placeholder(parent_container, paragraph, recom_lis
         if color: run_none.font.color.rgb = color
         return
 
-    # Primera viñeta va al lado del título
+    # Primera recomendación al lado del título
     run_first = paragraph.add_run("• " + combined_items[0])
     run_first.font.name = font_name
     run_first.font.size = font_size
     if color: run_first.font.color.rgb = color
 
-    # Demás viñetas en renglones inferiores
+    # Demás recomendaciones en renglones inferiores con sangría idéntica a tu plantilla
     current_p = paragraph
     for item in combined_items[1:]:
         new_p_element = OxmlElement('w:p')
@@ -654,7 +646,7 @@ def incrementar_consecutivo_local():
     guardar_config("ultimo_consecutivo_local", str(next_num))
     return f"SST-2026-{next_num}"
 
-# --- CONSTRUCTOR DE DOCUMENTO ÚNICO INTELIGENTE (PRODUCCIÓN) ---
+# --- CONSTRUCTOR DE DOCUMENTO ÚNICO INTELIGENTE ---
 def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_file):
     if template_uploaded:
         doc_word = Document(template_uploaded)
@@ -688,12 +680,13 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
         "{{CARGO DE LA PERSONA}}": datos_trabajador["cargo"].upper()
     }
 
-    # Procesar un párrafo de forma estructurada según su ubicación
+    # Procesamiento dinámico de párrafos
     def procesar_parrafo(p, container):
         if "{{LISTA DE EXAMENES REALIZADOS}}" in p.text:
             insert_bullets_in_placeholder(container, p, datos_trabajador["examenes_lista"])
             return True
         if "{{Recomendaciones médicas}}" in p.text:
+            # Llama a la función que ahora ignora el array de SVE/PVE
             insert_recommendations_in_placeholder(container, p, datos_trabajador["recomendaciones_lista"], datos_trabajador["vigilancia_lista"])
             return True
         if "{{Observaciones}}" in p.text:
@@ -713,14 +706,14 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
     for p in list(doc_word.paragraphs):
         procesar_parrafo(p, doc_word)
 
-    # Escaneo en las tablas estructuradas de tu plantilla Word
+    # Escaneo en las tablas estructuradas
     for table in doc_word.tables:
         for row in table.rows:
             for cell in row.cells:
                 for p in list(cell.paragraphs):
                     procesar_parrafo(p, cell)
                 
-                # Buscar ubicación de firma
+                # Búsqueda y colocación de firma autorizada
                 idx_victor = -1
                 for idx, p in enumerate(cell.paragraphs):
                     if "VÍCTOR ALONSO MORENO CASAS" in p.text:
@@ -814,6 +807,7 @@ def generar_pdf_nativo(datos, consecutivo_num, lugar, fecha, firma_file):
     pdf.multi_cell(0, 5, s(body_text))
     pdf.ln(4)
     
+    # Exámenes
     pdf.set_font("Arial", "B", 10)
     pdf.set_text_color(*primary_color)
     pdf.cell(0, 6, s("EXÁMENES REALIZADOS:"), 0, 1, "L")
@@ -824,6 +818,7 @@ def generar_pdf_nativo(datos, consecutivo_num, lugar, fecha, firma_file):
         pdf.cell(0, 5, s(f"- {ex}"), 0, 1, "L")
     pdf.ln(4)
     
+    # Recomendaciones
     pdf.set_font("Arial", "B", 10)
     pdf.set_text_color(*primary_color)
     pdf.cell(0, 6, s("RECOMENDACIONES MÉDICAS:"), 0, 1, "L")
@@ -838,6 +833,7 @@ def generar_pdf_nativo(datos, consecutivo_num, lugar, fecha, firma_file):
         pdf.cell(0, 5, s("Ninguna."), 0, 1, "L")
     pdf.ln(4)
     
+    # Observaciones
     pdf.set_font("Arial", "B", 10)
     pdf.set_text_color(*primary_color)
     pdf.cell(32, 5, s("OBSERVACIONES:"), 0, 0, "L")
@@ -847,6 +843,7 @@ def generar_pdf_nativo(datos, consecutivo_num, lugar, fecha, firma_file):
     pdf.multi_cell(0, 5, s(obs_text))
     pdf.ln(2)
     
+    # Remisiones
     pdf.set_font("Arial", "B", 10)
     pdf.set_text_color(*primary_color)
     pdf.cell(26, 5, s("REMISIONES:"), 0, 0, "L")
