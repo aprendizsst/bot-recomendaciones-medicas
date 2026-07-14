@@ -27,7 +27,44 @@ if uploaded_file is not None:
                 try:
                     # Configurar la IA con la clave provista
                     genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+                    
+                    # --- DETECCIÓN DINÁMICA DE MODELO (EVITA EL ERROR 404) ---
+                    with st.spinner("Buscando modelos compatibles con tu cuenta..."):
+                        try:
+                            # Listamos los modelos que soporta tu clave de API
+                            modelos_sistema = []
+                            for m in genai.list_models():
+                                if 'generateContent' in m.supported_generation_methods:
+                                    modelos_sistema.append(m.name)
+                            
+                            # Nuestra lista de preferidos de mejor a peor
+                            preferidos = [
+                                'models/gemini-1.5-flash',
+                                'models/gemini-2.5-flash',
+                                'models/gemini-1.5-flash-latest',
+                                'models/gemini-2.5-flash-latest',
+                                'models/gemini-pro'
+                            ]
+                            
+                            modelo_final = None
+                            for pref in preferidos:
+                                if pref in modelos_sistema:
+                                    modelo_final = pref
+                                    break
+                            
+                            if not modelo_final:
+                                # Si no encuentra ninguno de los anteriores, toma el primero que sirva de tu lista
+                                modelo_final = modelos_sistema[0] if modelos_sistema else 'models/gemini-1.5-flash'
+                            
+                            # Limpiamos el nombre para usarlo
+                            modelo_nombre = modelo_final.replace('models/', '')
+                            st.info(f"🤖 ¡Conexión exitosa! Usando el modelo de IA: `{modelo_nombre}`")
+                            model = genai.GenerativeModel(modelo_nombre)
+                            
+                        except Exception as list_error:
+                            # Fallback de seguridad por si falla la lista
+                            st.warning("No se pudo mapear los modelos, usando el de respaldo...")
+                            model = genai.GenerativeModel('gemini-1.5-flash')
                     
                     # Extraer el texto del PDF
                     texto_pdf = ""
@@ -64,7 +101,6 @@ if uploaded_file is not None:
                         doc = Document()
                         doc.add_heading('Recomendaciones Médicas Extraídas', 0)
                         
-                        # Dividir el texto por líneas para intentar darle una estructura básica en Word
                         for linea in resultado_texto.split('\n'):
                             if linea.startswith('##'):
                                 doc.add_heading(linea.replace('##', '').strip(), level=1)
