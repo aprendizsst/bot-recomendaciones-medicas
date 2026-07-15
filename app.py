@@ -326,7 +326,6 @@ def es_vacio_o_negativo(texto):
     if not texto: return True
     return texto.strip().lower().strip(" .-_/ '\"") in ["no", "ninguna", "ninguno", "no registra", "sin remisiones", "normal", "n/a", "sin remisión"]
 
-# --- FILTRADO INTELIGENTE DE RUIDO DE ESTADOS CLÍNICOS ---
 def es_vacio_o_estado(texto):
     if not texto: return True
     t_clean = texto.strip().upper()
@@ -440,7 +439,7 @@ def analizar_pdf_inteligente(texto):
                 if cols_c and not any(h in cols_c[0].upper() for h in ["EPS", "ARP", "AFP", "DATOS", "CARGO"]):
                     datos["cargo"] = corregir_ortografia_sst(cols_c[0].strip()).title()
 
-    # --- MEJORA: ESCÁNER GLOBAL ROBUSTO DE FECHA Y MUNICIPIO (MÚLTIPLES IPS) ---
+    # --- ESCÁNER GLOBAL ROBUSTO DE FECHA Y MUNICIPIO (SOPORTE DE FORMATO) ---
     for line in lineas_raw:
         m_f_glob = re.search(r'\b(\d{1,2})\s*[\s\|/-]\s*(\d{1,2})\s*[\s\|/-]\s*(20\d{2})\b', line)
         if m_f_glob:
@@ -461,11 +460,6 @@ def analizar_pdf_inteligente(texto):
     if m_comb:
         if not datos["lugar"] or datos["lugar"] == "Tunja": datos["lugar"] = m_comb.group(1).strip().title()
         if datos["fecha"] == datetime.date.today(): datos["fecha"] = intentar_parsear_fecha(m_comb.group(2))
-
-    for palabra in ["INGRESO", "PERIÓDICO", "PERIODICO", "EGRESO", "RETIRO", "CAMBIO DE CARGO", "POST-INCAPACIDAD", "POST INCAPACIDAD", "CONTROL PERIÓDICO"]:
-        if palabra in texto.upper():
-            datos["tipo_examen"] = "PERIODICO" if "PERIOD" in palabra or "CONTROL" in palabra else palabra
-            break
 
     EXAMS_MAP = {
         "AUDIOMETRIA DE TONOS": "Audiometría", "AUDIOMETRIA": "Audiometría",
@@ -582,7 +576,7 @@ def analizar_pdf_inteligente(texto):
     datos["recomendaciones_lista"] = recoms_por_examen
     datos["vigilancia_lista"] = list(pve_detectados)
 
-    # --- MEJORA CLAVE: MAPEO TOTAL DE PROGRAMAS SVE SIN FILTRADOS DE ESTADO ---
+    # --- SOLUCIÓN DE VIGILANCIA: VALIDACIÓN CERRADA CONTRA DICCIONARIO CLÍNICO ---
     programas_encontrados = []
     sve_clinical_keywords = {
         "VISUAL": "Conservación Visual", "AUDITIV": "Conservación Auditiva", 
@@ -595,6 +589,7 @@ def analizar_pdf_inteligente(texto):
         "HUMO": "Conservación Respiratoria", "CARDIOVASCULAR": "Riesgo Cardiovascular"
     }
 
+    # Bloque de captura estricta por palabras clave clínicas
     m_bloque = re.search(r'(?:Ingresar al programa de vigilancia epidemiol[oó]gica|PROGRAMA DE VIGILANCIA)([\s\S]*?)(?:Remisiones:|Observaciones:|Otras Observaciones|Atentamente:|$)', texto, re.IGNORECASE)
     if m_bloque:
         texto_bloque = m_bloque.group(1).upper()
@@ -934,7 +929,7 @@ def generar_html_vista(datos, consecutivo_num, lugar, fecha):
         <p><strong>observaciones:</strong> {datos['observaciones']}</p>
         <p><strong>remisiones:</strong> {datos['remisiones']}</p><br>
         <p>Atentamente,</p><br>
-        <p><strong>VÍCTOR ALONNO MORENO CASAS</strong><br>Coordinador SST</p>
+        <p><strong>VÍCTOR ALONSO MORENO CASAS</strong><br>Coordinador SST</p>
     </div>
     """
 
