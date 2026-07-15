@@ -15,6 +15,7 @@ import io
 import zipfile
 import tempfile
 import subprocess
+import base64
 
 # --- CONFIGURACIÓN DE PÁGINA AVANZADA ---
 st.set_page_config(
@@ -126,6 +127,10 @@ st.markdown("""
         color: #e5e7eb !important;
     }
     
+    div[data-testid="stDrawers"] {
+         background-color: #111827 !important;
+    }
+    
     div[data-testid="stExpander"] {
         background-color: #111827 !important;
         border: 1px solid #1f2937 !important;
@@ -215,6 +220,8 @@ if "username" not in st.session_state:
     st.session_state.username = ""
 if "documentos" not in st.session_state:
     st.session_state.documentos = {}
+if "pdfs_raw_bytes" not in st.session_state:  # NUEVO: Guarda los bytes originales de los PDFs subidos
+    st.session_state.pdfs_raw_bytes = {}
 if "textos_raw" not in st.session_state:
     st.session_state.textos_raw = {}
 if "export_bytes" not in st.session_state:
@@ -308,7 +315,7 @@ def corregir_ortografia_sst(texto):
         r'\bproteccion\b': 'protección', r'\balimentacion\b': 'alimentación',
         r'\brecomendacion\b': 'recomendación', r'\bperfil\s+lipidico\b': 'perfil lipídico',
         r'\benfasis\b': 'énfasis', r'\bosteomuscular\b': 'osteomuscular',
-        r'\bregion\b': 'región', r'\bhabitos\b': 'hábitos'
+        r'\bregion\b': 'región', r'\bhabitos\b': 'hábitos', r'\badiministrativo\b': 'administrativo'
     }
     for patron, reemplazo in diccionario_SST.items():
         texto = re.sub(patron, reemplazo, texto, flags=re.IGNORECASE)
@@ -363,11 +370,8 @@ def limpiar_ruido_columnas_final(texto):
         texto = re.sub(patron + r'\s*$', '', texto, flags=re.IGNORECASE)
     return texto.strip(" :-,_/")
 
-# --- EXTRACTOR INTELIGENTE DE FECHAS ---
 def intentar_parsear_fecha(fecha_str):
     fecha_str = fecha_str.lower().strip(" :-,_/.()[]")
-    
-    # Formato escrito: 14 de julio de 2026
     m_letras = re.search(r'(\d{1,2})\s+de\s+([a-zñáéíóúü]+)\s+de\s+(20\d{2})', fecha_str)
     if m_letras:
         dia = int(m_letras.group(1))
@@ -379,15 +383,11 @@ def intentar_parsear_fecha(fecha_str):
         }
         return datetime.date(anio, meses.get(mes_str, 1), dia)
         
-    # Formato numérico YYYY-MM-DD
     m_ymd = re.search(r'(20\d{2})[-/](\d{1,2})[-/](\d{1,2})', fecha_str)
-    if m_ymd:
-        return datetime.date(int(m_ymd.group(1)), int(m_ymd.group(2)), int(m_ymd.group(3)))
+    if m_ymd: return datetime.date(int(m_ymd.group(1)), int(m_ymd.group(2)), int(m_ymd.group(3)))
         
-    # Formato numérico DD/MM/YYYY
     m_dmy = re.search(r'(\d{1,2})[-/](\d{1,2})[-/](20\d{2})', fecha_str)
-    if m_dmy:
-        return datetime.date(int(m_dmy.group(3)), int(m_dmy.group(2)), int(m_dmy.group(1)))
+    if m_dmy: return datetime.date(int(m_dmy.group(3)), int(m_dmy.group(2)), int(m_dmy.group(1)))
         
     return datetime.date.today()
 
@@ -403,27 +403,68 @@ def analizar_pdf_inteligente(texto):
     }
     if not texto: return datos
 
-    # --- 1. MEJORA: EXTRACCIÓN DINÁMICA DE LUGAR Y FECHA ---
-    m_lugar = re.search(r'(?:Lugar|Ciudad|Municipio):\s*([A-Za-zñáéíóúÜÑ\s]+)', texto, re.IGNORECASE)
-    if m_lugar:
-        datos["lugar"] = re.sub(r'[:\-,_]+', '', m_lugar.group(1)).strip().title()
+    lineas_raw = texto.split('\n')
+
+    # --- PRE-ESCÁNER DE GRILLAS COMPACTAS (NOMBRES, IDENTIFICACIÓN, FECHA, LUGAR Y CARGO) ---
+    for idx, line in enumerate(lineas_raw):
+        l_up = line.upper().strip()
         
-    m_fecha = re.search(r'(?:Fecha|Fecha Examen):\s*([^\n]+)', texto, re.IGNORECASE)
-    if m_fecha:
-        datos["fecha"] = intentar_parsear_fecha(m_fecha.group(1))
+        # 1. Nombre completo en celdas de Grilla (Apellidos y Nombres)
+        if "APELLIDOS Y NOMBRES" in l_up:
+            if idx + 1 < len(lineas_raw):
+                l_val = lineas_raw[idx + 1].strip()
+                cols = [c.strip() for c in re.split(r'\s{2,}', l_val) if c.strip()]
+                if cols and not any(h in cols[0].upper() for h in ["GÉNERO", "EDAD", "DOCUMENTO", "TIPO"]):
+                    datos["nombre"] = cols[0].title()
+
+        # 2. Fecha Estructurada en Grilla y Municipio
+        if "FECHA Y CIUDAD DE REALIZACIÓN" in l_up or "FECHA Y CIUDAD DE REALIZACION" in l_up:
+            if idx + 1 < len(lineas_raw):
+                l_val = lineas_raw[idx + 1].strip()
+                m_f_grid = re.search(r'\b(\d{1,2})\s+(\d{1,2})\s+(20\d{2})\b', l_val)
+                if m_f_grid:
+                    try:
+                        datos["fecha"] = datetime.date(int(m_f_grid.group(3)), int(m_f_grid.group(2)), int(m_f_grid.group(1)))
+                    except: pass
+                    resto = l_val[m_f_grid.end():].strip()
+                    if resto:
+                        resto_clean = re.sub(r'\(.*?\)', '', resto).strip()
+                        if resto_clean and not resto_clean.upper() == "CIUDAD":
+                            datos["lugar"] = resto_clean.title()
+                else:
+                    cols_fc = [c.strip() for c in re.split(r'\s{2,}', l_val) if c.strip()]
+                    if cols_fc and len(cols_fc[0]) > 2 and not cols_fc[0].upper() == "CIUDAD":
+                        datos["lugar"] = re.sub(r'\(.*?\)', '', cols_fc[0]).strip().title()
+
+        # 3. MEJORA: Cargo Estructurado en Celda de Grilla
+        if l_up == "CARGO":
+            if idx + 1 < len(lineas_raw):
+                l_val = lineas_raw[idx + 1].strip()
+                cols_c = [c.strip() for c in re.split(r'\s{2,}', l_val) if c.strip()]
+                if cols_c and not any(h in cols_c[0].upper() for h in ["EPS", "ARP", "AFP", "DATOS"]):
+                    datos["cargo"] = corregir_ortografia_sst(cols_c[0].strip()).title()
+
+    # --- FALLBACKS: BUSCADORES BASADOS EN LOGICA LINEAL TRADICIONAL ---
+    if not datos["lugar"] or datos["lugar"] == "Tunja":
+        m_lugar = re.search(r'(?:Lugar|Ciudad|Municipio):\s*([A-Za-zñáéíóúÜÑ\s]+)', texto, re.IGNORECASE)
+        if m_lugar: datos["lugar"] = re.sub(r'[:\-,_]+', '', m_lugar.group(1)).strip().title()
         
-    # Captura combinada estándar tipo: "Tunja, 15 de julio de 2026"
+    if datos["fecha"] == datetime.date.today():
+        m_fecha = re.search(r'(?:Fecha|Fecha Examen):\s*([^\n]+)', texto, re.IGNORECASE)
+        if m_fecha: datos["fecha"] = intentar_parsear_fecha(m_fecha.group(1))
+        
     m_comb = re.search(r'\b([A-Za-zñáéíóúÜÑ]+),\s*(\d{1,2}\s+de\s+[a-zA-Zíó]+\s+de\s+20\d{2})', texto, re.IGNORECASE)
     if m_comb:
-        datos["lugar"] = m_comb.group(1).strip().title()
-        datos["fecha"] = intentar_parsear_fecha(m_comb.group(2))
+        if not datos["lugar"] or datos["lugar"] == "Tunja": datos["lugar"] = m_comb.group(1).strip().title()
+        if datos["fecha"] == datetime.date.today(): datos["fecha"] = intentar_parsear_fecha(m_comb.group(2))
 
-    # --- 2. EXTRACCIÓN DE IDENTIDAD Y TIPO ---
-    m_nom = re.search(r'(?:Nombre|Paciente|Colaborador|Trabajador):\s*([^\n]+)', texto, re.IGNORECASE)
-    if m_nom: datos["nombre"] = limpiar_campo(m_nom.group(1))
+    if not datos["nombre"]:
+        m_nom = re.search(r'(?:Nombre|Paciente|Colaborador|Trabajador):\s*([^\n]+)', texto, re.IGNORECASE)
+        if m_nom: datos["nombre"] = limpiar_campo(m_nom.group(1))
 
-    m_car = re.search(r'(?:Cargo|Ocupación|Ocupacion|Puesto):\s*([^\n]+)', texto, re.IGNORECASE)
-    if m_car: datos["cargo"] = limpiar_campo(m_car.group(1))
+    if not datos["cargo"]:
+        m_car = re.search(r'(?:Cargo|Ocupación|Ocupacion|Puesto):\s*([^\n]+)', texto, re.IGNORECASE)
+        if m_car: datos["cargo"] = limpiar_campo(m_car.group(1))
 
     for palabra in ["INGRESO", "PERIÓDICO", "PERIODICO", "EGRESO", "RETIRO", "CAMBIO DE CARGO", "POST-INCAPACIDAD", "POST INCAPACIDAD", "CONTROL PERIÓDICO"]:
         if palabra in texto.upper():
@@ -452,27 +493,22 @@ def analizar_pdf_inteligente(texto):
     recoms_raw_dict = {}
     current_exam = None
     in_exams_section = True
-    
-    # Flags para el nuevo formato en tabla/grilla
     formato_grilla_detectado = False
     recoms_grilla_acumuladas = []
 
-    lineas = texto.split('\n')
-    for idx_l, linea in enumerate(lineas):
+    for idx_l, linea in enumerate(lineas_raw):
         linea_limpia = limpiar_linea_ruido_lateral(linea)
         linea_upper = linea_limpia.upper().strip()
         
-        # --- MEJORA: SOPORTE NUEVO FORMATO DE EXÁMENES PRACTICADOS ---
         if "EL CONCEPTO DE APTITUD SE DEFINIÓ A PARTIR DE LOS SIGUIENTES EXÁMENES PRACTICADOS" in linea_upper:
             for offset in range(1, 4):
-                if idx_l + offset < len(lineas):
-                    l_sig = lineas[idx_l + offset].upper()
+                if idx_l + offset < len(lineas_raw):
+                    l_sig = lineas_raw[idx_l + offset].upper()
                     for k_ex, v_ex in EXAMS_MAP.items():
                         if k_ex in l_sig and v_ex not in examenes_detectados:
                             examenes_detectados.append(v_ex)
             continue
             
-        # --- MEJORA: DETECCION DE RECOMENDACIONES MULTICOLUMNA ---
         if any(h in linea_upper for h in ["RECOMENDACIONES MÉDICAS", "RECOMENDACIONES OCUPACIONALES", "HABITOS Y ESTILO DE VIDA SALUDABLES"]):
             formato_grilla_detectado = True
             continue
@@ -489,7 +525,6 @@ def analizar_pdf_inteligente(texto):
                             recoms_grilla_acumuladas.append(rec_fmt)
                 continue
 
-        # --- ANÁLISIS DE FORMATO TRADICIONAL ---
         if any(stop in linea_upper for stop in ["OBSERVACIONES:", "OBSERVACION:", "REMISIONES:", "SISTEMA DE VIGILANCIA"]):
             in_exams_section = False
             if current_exam:
@@ -507,7 +542,6 @@ def analizar_pdf_inteligente(texto):
                 current_exam = EXAMS_MAP[matched_key]
                 if current_exam not in examenes_detectados:
                     examenes_detectados.append(current_exam)
-                
                 idx = linea_upper.find(matched_key) + len(matched_key)
                 recoms_raw_dict[current_exam] = linea_limpia[idx:].strip(" :-,_/")
             else:
@@ -518,7 +552,6 @@ def analizar_pdf_inteligente(texto):
     recoms_por_examen = []
     pve_detectados = set()
 
-    # Consolidación final según formato detectado
     if recoms_grilla_acumuladas:
         for rec in recoms_grilla_acumuladas:
             recoms_por_examen.append(rec)
@@ -553,7 +586,7 @@ def analizar_pdf_inteligente(texto):
     datos["recomendaciones_lista"] = recoms_por_examen
     datos["vigilancia_lista"] = list(pve_detectados)
 
-    # --- MEJORA: EXTRACCIÓN MULTILÍNEA SEGURA PARA MÚLTIPLES PROGRAMAS SVE ---
+    # RECOLECCIÓN SECUENCIAL DE MÚLTIPLES PROGRAMAS SVE
     programas_encontrados = []
     patron_bloque_pve = r'(?:Ingresar al programa de vigilancia epidemiol[oó]gica o programa de prevenci[oó]n y promoci[oó]n)([\s\S]*?)(?:Remisiones:|Observaciones:|Otras Observaciones|Atentamente:|$)'
     m_bloque = re.search(patron_bloque_pve, texto, re.IGNORECASE)
@@ -592,7 +625,6 @@ def analizar_pdf_inteligente(texto):
                 seccion.append(l_limpia)
         return "\n".join([s for s in seccion if s]).strip()
 
-    # --- MEJORA: EXTRAER OBSERVACIONES DESDE FORMATO DE NUEVA IPS ---
     obs_fmt_nuevo = ""
     m_obs_nuevo = re.search(r'OTRAS OBSERVACIONES Y RECOMENDACIONES\s*\n\s*([^\n]+)', texto, re.IGNORECASE)
     if m_obs_nuevo:
@@ -655,7 +687,6 @@ def replace_placeholder_in_paragraph_runs(paragraph, placeholder, value):
         bold = False
         italic = False
         color = None
-        
         if paragraph.runs:
             for r in paragraph.runs:
                 if r.text.strip():
@@ -665,7 +696,6 @@ def replace_placeholder_in_paragraph_runs(paragraph, placeholder, value):
                     italic = r.italic if r.italic is not None else italic
                     color = r.font.color.rgb if r.font.color else color
                     break
-        
         full_text = paragraph.text.replace(placeholder, value)
         paragraph.text = ""
         new_run = paragraph.add_run(full_text)
@@ -673,8 +703,7 @@ def replace_placeholder_in_paragraph_runs(paragraph, placeholder, value):
         new_run.font.size = font_size
         new_run.bold = bold
         new_run.italic = italic
-        if color:
-            new_run.font.color.rgb = color
+        if color: new_run.font.color.rgb = color
     return True
 
 def insert_bullets_in_placeholder(parent_container, paragraph, items_list):
@@ -696,121 +725,92 @@ def insert_bullets_in_placeholder(parent_container, paragraph, items_list):
     
     if not items_list:
         run = paragraph.add_run("Ninguno.")
-        run.font.name = font_name
-        run.font.size = font_size
-        run.bold = bold
+        run.font.name = font_name; run.font.size = font_size; run.bold = bold
         if color: run.font.color.rgb = color
         return
 
     run = paragraph.add_run("• " + items_list[0])
-    run.font.name = font_name
-    run.font.size = font_size
-    run.bold = bold
+    run.font.name = font_name; run.font.size = font_size; run.bold = bold
     if color: run.font.color.rgb = color
 
     current_p = paragraph
     for item in items_list[1:]:
         new_p_element = OxmlElement('w:p')
         current_p._p.addnext(new_p_element)
-        
         new_para = Paragraph(new_p_element, parent_container)
         new_para.paragraph_format.alignment = paragraph.paragraph_format.alignment
         new_para.paragraph_format.line_spacing = paragraph.paragraph_format.line_spacing
         new_para.paragraph_format.space_after = Pt(2)
         new_para.paragraph_format.space_before = Pt(0)
         new_para.paragraph_format.left_indent = paragraph.paragraph_format.left_indent or Inches(0.25)
-        
         run_new = new_para.add_run("• " + item)
-        run_new.font.name = font_name
-        run_new.font.size = font_size
-        run_new.bold = bold
+        run_new.font.name = font_name; run_new.font.size = font_size; run_new.bold = bold
         if color: run_new.font.color.rgb = color
-        
         current_p = new_para
 
 def insert_recommendations_in_placeholder(parent_container, paragraph, recom_list):
     combined_items = list(recom_list)
-
     if paragraph.runs:
         font_name = paragraph.runs[0].font.name or "Arial"
         font_size = paragraph.runs[0].font.size or Pt(11)
         color = paragraph.runs[0].font.color.rgb if paragraph.runs[0].font.color else None
     else:
-        font_name = "Arial"
-        font_size = Pt(11)
-        color = None
+        font_name = "Arial"; font_size = Pt(11); color = None
 
     paragraph.text = ""
     paragraph.paragraph_format.space_after = Pt(2)
     paragraph.paragraph_format.space_before = Pt(0)
-    
     run_lbl = paragraph.add_run("Recomendaciones: ")
-    run_lbl.bold = True
-    run_lbl.font.name = font_name
-    run_lbl.font.size = font_size
+    run_lbl.bold = True; run_lbl.font.name = font_name; run_lbl.font.size = font_size
     if color: run_lbl.font.color.rgb = color
 
     if not combined_items:
         run_none = paragraph.add_run("Ninguna.")
-        run_none.font.name = font_name
-        run_none.font.size = font_size
+        run_none.font.name = font_name; run_none.font.size = font_size
         if color: run_none.font.color.rgb = color
         return
 
     run_first = paragraph.add_run("• " + combined_items[0])
-    run_first.font.name = font_name
-    run_first.font.size = font_size
+    run_first.font.name = font_name; run_first.font.size = font_size
     if color: run_first.font.color.rgb = color
 
     current_p = paragraph
     for item in combined_items[1:]:
         new_p_element = OxmlElement('w:p')
         current_p._p.addnext(new_p_element)
-        
         new_para = Paragraph(new_p_element, parent_container)
         new_para.paragraph_format.alignment = paragraph.paragraph_format.alignment
         new_para.paragraph_format.line_spacing = paragraph.paragraph_format.line_spacing
         new_para.paragraph_format.space_after = Pt(2)
         new_para.paragraph_format.space_before = Pt(0)
         new_para.paragraph_format.left_indent = Inches(0.25)
-        
         run_new = new_para.add_run("• " + item)
-        run_new.font.name = font_name
-        run_new.font.size = font_size
+        run_new.font.name = font_name; run_new.font.size = font_size
         if color: run_new.font.color.rgb = color
-        
         current_p = new_para
 
 def replace_label_placeholder(paragraph, label_text, placeholder, value):
     if placeholder not in paragraph.text:
         return False
-        
     if paragraph.runs:
         font_name = paragraph.runs[0].font.name or "Arial"
         font_size = paragraph.runs[0].font.size or Pt(11)
         color = paragraph.runs[0].font.color.rgb if paragraph.runs[0].font.color else None
     else:
-        font_name = "Arial"
-        font_size = Pt(11)
-        color = None
+        font_name = "Arial"; font_size = Pt(11); color = None
         
     paragraph.text = ""
     paragraph.paragraph_format.space_after = Pt(3)
     paragraph.paragraph_format.space_before = Pt(0)
-    
     run_lbl = paragraph.add_run(label_text)
-    run_lbl.bold = True
-    run_lbl.font.name = font_name
-    run_lbl.font.size = font_size
+    run_lbl.bold = True; run_lbl.font.name = font_name; run_lbl.font.size = font_size
     if color: run_lbl.font.color.rgb = color
     
     val_clean = value.strip() if value else "Ninguna."
-    if es_vacio_o_negativo(val_clean):
-        val_clean = "Ninguna."
+    if es_vacio_o_negativo(val_clean): val_clean = "Ninguna."
         
     run_val = paragraph.add_run(val_clean)
-    run_val.font.name = font_name
-    run_val.font.size = font_size
+    run_val.font.name = font_name; run_val.font.size = font_size
     if color: run_val.font.color.rgb = color
     return True
 
@@ -873,19 +873,15 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
             return True
             
         for k, v in simple_replacements.items():
-            if k in p.text:
-                replace_placeholder_in_paragraph_runs(p, k, v)
-                
+            if k in p.text: replace_placeholder_in_paragraph_runs(p, k, v)
         aplicar_negrita_dinamica_cuerpo(p, datos_trabajador["tipo_examen"])
 
-    for p in list(doc_word.paragraphs):
-        procesar_parrafo(p, doc_word)
+    for p in list(doc_word.paragraphs): procesar_parrafo(p, doc_word)
 
     for table in doc_word.tables:
         for row in table.rows:
             for cell in row.cells:
-                for p in list(cell.paragraphs):
-                    procesar_parrafo(p, cell)
+                for p in list(cell.paragraphs): procesar_parrafo(p, cell)
                 
                 idx_victor = -1
                 for idx, p in enumerate(cell.paragraphs):
@@ -907,7 +903,6 @@ def convertir_docx_a_pdf(docx_bytes):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as temp_docx:
         temp_docx.write(docx_bytes)
         temp_docx_path = temp_docx.name
-
     pdf_path = temp_docx_path.replace(".docx", ".pdf")
     
     try:
@@ -915,30 +910,22 @@ def convertir_docx_a_pdf(docx_bytes):
             "libreoffice", "--headless", "--convert-to", "pdf", 
             "--outdir", os.path.dirname(temp_docx_path), temp_docx_path
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
-        
         if os.path.exists(pdf_path):
-            with open(pdf_path, "rb") as f:
-                pdf_bytes = f.read()
-            os.unlink(temp_docx_path)
-            os.unlink(pdf_path)
+            with open(pdf_path, "rb") as f: pdf_bytes = f.read()
+            os.unlink(temp_docx_path); os.unlink(pdf_path)
             return pdf_bytes, True
-    except Exception:
-        pass
+    except: pass
 
     try:
         from docx2pdf import convert
         convert(temp_docx_path, pdf_path)
         if os.path.exists(pdf_path):
-            with open(pdf_path, "rb") as f:
-                pdf_bytes = f.read()
-            os.unlink(temp_docx_path)
-            os.unlink(pdf_path)
+            with open(pdf_path, "rb") as f: pdf_bytes = f.read()
+            os.unlink(temp_docx_path); os.unlink(pdf_path)
             return pdf_bytes, True
-    except Exception:
-        pass
+    except: pass
 
-    if os.path.exists(temp_docx_path):
-        os.unlink(temp_docx_path)
+    if os.path.exists(temp_docx_path): os.unlink(temp_docx_path)
     return None, False
 
 def generar_html_vista(datos, consecutivo_num, lugar, fecha):
@@ -955,7 +942,7 @@ def generar_html_vista(datos, consecutivo_num, lugar, fecha):
         <p><strong>EXÁMENES REALIZADOS:</strong></p>
         <ul>{"".join([f"<li>{ex}</li>" for ex in datos['examenes_lista']])}</ul>
         <p><strong>Recomendaciones:</strong></p>
-        <ul>{"".join([f"<li>{rec}</li>" for rec in datos['recommendaciones_lista']])}</ul>
+        <ul>{"".join([f"<li>{rec}</li>" for rec in datos['recomendaciones_lista']])}</ul>
         <p><strong>Programa de Vigilancia:</strong> {datos.get('vigilancia_programa', 'NINGUNO')}</p>
         <p><strong>observaciones:</strong> {datos['observaciones']}</p>
         <p><strong>remisiones:</strong> {datos['remisiones']}</p><br>
@@ -973,6 +960,7 @@ if st.sidebar.button("Cerrar Sesión"):
     st.session_state.logged_in = False
     st.session_state.username = ""
     st.session_state.documentos = {}
+    st.session_state.pdfs_raw_bytes = {}
     st.session_state.textos_raw = {}
     st.session_state.export_bytes = None
     st.session_state.zip_bytes = None
@@ -1004,12 +992,15 @@ with col_izq:
     if pdfs_subidos:
         if len(pdfs_subidos) != st.session_state.document_count:
             st.session_state.documentos = {}
+            st.session_state.pdfs_raw_bytes = {}
             st.session_state.zip_bytes = None
             st.session_state.document_count = len(pdfs_subidos)
             
         for pdf in pdfs_subidos:
             if pdf.name not in st.session_state.documentos:
-                with pdfplumber.open(pdf) as p_file:
+                pdf_raw_data = pdf.read()
+                st.session_state.pdfs_raw_bytes[pdf.name] = pdf_raw_data  # Almacenar bytes para visor comparativo
+                with pdfplumber.open(io.BytesIO(pdf_raw_data)) as p_file:
                     texto_raw = "".join([page.extract_text() + "\n" for page in p_file.pages])
                 st.session_state.documentos[pdf.name] = analizar_pdf_inteligente(texto_raw)
         
@@ -1021,9 +1012,29 @@ with col_izq:
         """, unsafe_allow_html=True)
         
         archivo_seleccionado = st.selectbox("🎯 Selecciona Colaborador:", list(st.session_state.documentos.keys()))
+        
+        # --- MEJORA: VISOR E INSPECTOR INTERNO DEL PDF ORIGINAL SUBIDO ---
+        if archivo_seleccionado and archivo_seleccionado in st.session_state.pdfs_raw_bytes:
+            st.markdown("---")
+            st.markdown("<h4 style='color:#60a5fa;'>📄 Soporte Visual de Comparación</h4>", unsafe_allow_html=True)
+            
+            bytes_originales = st.session_state.pdfs_raw_bytes[archivo_seleccionado]
+            st.download_button(
+                label="📥 Descargar PDF de Origen (IPS)",
+                data=bytes_originales,
+                file_name=f"ORIGINAL_{archivo_seleccionado}",
+                mime="application/pdf",
+                key="btn_download_original_source"
+            )
+            
+            with st.expander("👁️ Ver / Ocultar PDF de Origen Subido", expanded=True):
+                base64_encoded_pdf = base64.b64encode(bytes_originales).decode('utf-8')
+                embedded_pdf_frame = f'<iframe src="data:application/pdf;base64,{base64_encoded_pdf}" width="100%" height="550" style="border:1px solid #1f2937; border-radius:8px;"></iframe>'
+                st.markdown(embedded_pdf_frame, unsafe_allow_html=True)
     else:
         archivo_seleccionado = None
         st.session_state.documentos = {}
+        st.session_state.pdfs_raw_bytes = {}
         st.session_state.zip_bytes = None
         st.session_state.document_count = 0
 
@@ -1037,7 +1048,6 @@ with col_der:
         doc_actual = st.session_state.documentos[archivo_seleccionado]
         
         col_f1, col_f2 = st.columns(2)
-        # --- MEJORA: LOS VALORES POR DEFECTO AHORA VIENEN ASIGNADOS DESDE LA EXTRACCIÓN AUTOMÁTICA DEL PDF ---
         with col_f1: lugar = st.text_input("Lugar:", value=doc_actual.get("lugar", "Tunja"))
         with col_f2: fecha = st.date_input("Fecha:", value=doc_actual.get("fecha", datetime.date.today()))
         
@@ -1048,7 +1058,7 @@ with col_der:
         with col_p2: cargo_persona = st.text_input("Cargo:", value=doc_actual["cargo"])
         
         examenes_realizados = st.text_area("Exámenes Realizados:", value="\n".join(doc_actual["examenes_lista"]))
-        recom_medicas = st.text_area("Recomendaciones por Examen:", value="\n".join(doc_actual["recomendaciones_lista"]), height=130)
+        recom_medicas = st.text_area("Recomendaciones por Examen:", value="\n".join(doc_actual["recommendaciones_lista"]), height=130)
         
         programa_vigilancia = st.text_input("Programa de Vigilancia Epidemiológica (PVE):", value=doc_actual.get("vigilancia_programa", "NINGUNO"))
         
@@ -1081,8 +1091,7 @@ with col_der:
                     
                     if "Word" in formato_salida:
                         st.session_state.processed_doc = {
-                            "bytes": bytes_word,
-                            "consec_num": consec_num,
+                            "bytes": bytes_word, "consec_num": consec_num,
                             "filename": f"Informe_{nombre_persona.replace(' ','_')}.docx",
                             "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                         }
@@ -1090,20 +1099,15 @@ with col_der:
                         bytes_pdf, exito = convertir_docx_a_pdf(bytes_word)
                         if exito:
                             st.session_state.processed_doc = {
-                                "bytes": bytes_pdf,
-                                "consec_num": consec_num,
-                                "filename": f"Informe_{nombre_persona.replace(' ','_')}.pdf",
-                                "mime": "application/pdf"
+                                "bytes": bytes_pdf, "consec_num": consec_num,
+                                "filename": f"Informe_{nombre_persona.replace(' ','_')}.pdf", "mime": "application/pdf"
                             }
-                        else:
-                            st.error("⚠️ No se pudo compilar el PDF de manera directa para coincidir con el Word.")
+                        else: st.error("⚠️ No se pudo compilar el PDF de manera directa para coincidir con el Word.")
                     else:
                         html_out = generar_html_vista(doc_actual, consec_num, lugar, fecha)
                         st.session_state.processed_doc = {
-                            "bytes": html_out.encode('utf-8'),
-                            "consec_num": consec_num,
-                            "filename": f"Informe_{nombre_persona.replace(' ','_')}.html",
-                            "mime": "text/html"
+                            "bytes": html_out.encode('utf-8'), "consec_num": consec_num,
+                            "filename": f"Informe_{nombre_persona.replace(' ','_')}.html", "mime": "text/html"
                         }
                 st.rerun()
             
@@ -1112,9 +1116,7 @@ with col_der:
                 st.success(f"🟢 Guardado con éxito en base (Consecutivo: {doc_info['consec_num']})")
                 st.download_button(
                     label=f"📥 Descargar archivo generado ({doc_info['filename'].split('.')[-1].upper()})",
-                    data=doc_info["bytes"],
-                    file_name=doc_info["filename"],
-                    mime=doc_info["mime"]
+                    data=doc_info["bytes"], file_name=doc_info["filename"], mime=doc_info["mime"]
                 )
                         
         with col_gen2:
@@ -1125,19 +1127,15 @@ with col_der:
                         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                             for filename, datos_trab in st.session_state.documentos.items():
                                 bytes_word, consec_num = generar_word_unico(datos_trab, lugar, fecha, template_uploaded, firma_file)
-                                
                                 if "Word" in formato_salida:
                                     zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.docx", bytes_word)
                                 elif "PDF" in formato_salida:
                                     bytes_pdf, exito = convertir_docx_a_pdf(bytes_word)
-                                    if exito:
-                                        zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.pdf", bytes_pdf)
-                                    else:
-                                        zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.docx", bytes_word)
+                                    if exito: zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.pdf", bytes_pdf)
+                                    else: zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.docx", bytes_word)
                                 else:
                                     html_out = generar_html_vista(datos_trab, consec_num, lugar, fecha)
                                     zf.writestr(f"Recomendaciones_{datos_trab['nombre'].replace(' ', '_')}.html", html_out.encode('utf-8'))
-                                    
                         zip_buffer.seek(0)
                         st.session_state.zip_bytes = zip_buffer.getvalue()
                         st.success("🎉 ZIP de lote masivo compilado con éxito.")
@@ -1145,10 +1143,8 @@ with col_der:
                         
                 if st.session_state.zip_bytes is not None:
                     st.download_button(
-                        label="📥 Descargar ZIP Masivo", 
-                        data=st.session_state.zip_bytes, 
-                        file_name=f"Lote_SST_JER_SA_{fecha.strftime('%Y%m%d')}.zip", 
-                        mime="application/zip"
+                        label="📥 Descargar ZIP Masivo", data=st.session_state.zip_bytes, 
+                        file_name=f"Lote_SST_JER_SA_{fecha.strftime('%Y%m%d')}.zip", mime="application/zip"
                     )
     else:
         st.markdown("<div style='text-align:center; padding: 40px; color:#64748b;'><h3>👋 Tablero Listo</h3><p>Por favor, arrastra tus archivos PDF en la sección izquierda para activar el procesamiento automático.</p></div>", unsafe_allow_html=True)
