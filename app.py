@@ -11,6 +11,16 @@ import os
 import datetime
 import re
 import unicodedata
+try:
+    import pytesseract
+    from PIL import ImageEnhance, ImageFilter, ImageOps
+    OCR_DISPONIBLE = True
+except Exception:
+    pytesseract = None
+    ImageEnhance = None
+    ImageFilter = None
+    ImageOps = None
+    OCR_DISPONIBLE = False
 import requests
 import io
 import zipfile
@@ -848,26 +858,1246 @@ def extraer_identidad_cargo_lugar(texto):
     }
 
 
+
+# --- EXTRACTOR ESPECIALIZADO PARA LOS DOS FORMATOS DE CERTIFICADO ---
+# Se añade sobre la base existente. No reemplaza el analizador de exámenes,
+# recomendaciones, PVE, observaciones, remisiones ni generación de archivos.
+
+_ETIQUETAS_NOMBRE_CERTIFICADO = [
+    "NOMBRES Y APELLIDOS TRABAJADOR",
+    "NOMBRES Y APELLIDOS DEL TRABAJADOR",
+    "APELLIDOS Y NOMBRES TRABAJADOR",
+    "APELLIDOS Y NOMBRES DEL TRABAJADOR",
+    "NOMBRES Y APELLIDOS",
+    "APELLIDOS Y NOMBRES",
+    "NOMBRE DEL TRABAJADOR",
+    "NOMBRE COMPLETO",
+    "PACIENTE",
+]
+
+_ETIQUETAS_CARGO_CERTIFICADO = [
+    "CARGO DEL TRABAJADOR",
+    "CARGO ACTUAL DEL TRABAJADOR",
+    "CARGO ACTUAL",
+    "CARGO U OCUPACIÓN",
+    "CARGO U OCUPACION",
+    "OCUPACIÓN DEL TRABAJADOR",
+    "OCUPACION DEL TRABAJADOR",
+    "PUESTO DE TRABAJO",
+    "OCUPACIÓN",
+    "OCUPACION",
+    "OFICIO",
+    "LABOR",
+    "CARGO",
+]
+
+_ETIQUETAS_FECHA_CERTIFICADO = [
+    "FECHA DE REALIZACIÓN DEL EXAMEN",
+    "FECHA DE REALIZACION DEL EXAMEN",
+    "FECHA DE REALIZACIÓN DE LOS EXÁMENES",
+    "FECHA DE REALIZACION DE LOS EXAMENES",
+    "FECHA DEL EXAMEN",
+    "FECHA EXAMEN",
+    "FECHA DE ATENCIÓN",
+    "FECHA DE ATENCION",
+]
+
+_ETIQUETAS_LUGAR_CERTIFICADO = [
+    "FECHA Y CIUDAD DE REALIZACIÓN",
+    "FECHA Y CIUDAD DE REALIZACION",
+    "CIUDAD DE REALIZACIÓN DEL EXAMEN",
+    "CIUDAD DE REALIZACION DEL EXAMEN",
+    "LUGAR DE REALIZACIÓN DEL EXAMEN",
+    "LUGAR DE REALIZACION DEL EXAMEN",
+    "LUGAR DE REALIZACIÓN DE LOS EXÁMENES",
+    "LUGAR DE REALIZACION DE LOS EXAMENES",
+    "LUGAR DONDE SE REALIZARON LOS EXÁMENES",
+    "LUGAR DONDE SE REALIZARON LOS EXAMENES",
+    "MUNICIPIO DE REALIZACIÓN",
+    "MUNICIPIO DE REALIZACION",
+    "CIUDAD DEL EXAMEN",
+    "MUNICIPIO DEL EXAMEN",
+    "LUGAR DEL EXAMEN",
+    "SEDE DE ATENCIÓN",
+    "SEDE DE ATENCION",
+    "CIUDAD",
+    "MUNICIPIO",
+    "LUGAR",
+    "SEDE",
+]
+
+_ETIQUETAS_IPS_CERTIFICADO = [
+    "IPS QUE REALIZA EL EXAMEN",
+    "IPS PRESTADORA",
+    "CENTRO MÉDICO",
+    "CENTRO MEDICO",
+    "INSTITUCIÓN PRESTADORA",
+    "INSTITUCION PRESTADORA",
+]
+
+_PATRONES_LEGALES_RECOMENDACIONES = [
+    r"\bconsentimiento(?:\s+informado)?\b",
+    r"\bautorizo\b",
+    r"\bautorización\s+para\s+el\s+tratamiento\s+de\s+datos\b",
+    r"\bautorizacion\s+para\s+el\s+tratamiento\s+de\s+datos\b",
+    r"\btratamiento\s+de\s+datos(?:\s+personales)?\b",
+    r"\bprotección\s+de\s+datos\b",
+    r"\bproteccion\s+de\s+datos\b",
+    r"\bhabeas\s+data\b",
+    r"\bley\s+1581\b",
+    r"\bdeclaro\b",
+    r"\bmanifiesto\b",
+    r"\bhe\s+sido\s+informad[oa]\b",
+    r"\bacepto\s+(?:el|la|los|las)\b",
+    r"\bconstancia\b",
+    r"\briesgos\s+y\s+beneficios\b",
+    r"\bfirma\s+(?:del|de\s+la)\s+(?:trabajador|paciente|usuario|evaluado)\b",
+    r"\bfirma\s+del\s+m[eé]dico\b",
+    r"\bhuella\b",
+    r"\bdocumento\s+de\s+identidad\b",
+    r"\bresponsabilidad\s+del\s+paciente\b",
+    r"\bdeclaración\s+del\s+paciente\b",
+    r"\bdeclaracion\s+del\s+paciente\b",
+    r"\bderechos\s+y\s+deberes\b",
+    r"\binformación\s+suministrada\s+es\s+verdadera\b",
+    r"\binformacion\s+suministrada\s+es\s+verdadera\b",
+]
+
+_ENCABEZADOS_LEGALES = [
+    "CONSENTIMIENTO INFORMADO",
+    "CONSENTIMIENTO",
+    "AUTORIZACIÓN PARA TRATAMIENTO DE DATOS",
+    "AUTORIZACION PARA TRATAMIENTO DE DATOS",
+    "TRATAMIENTO DE DATOS PERSONALES",
+    "DECLARACIÓN DEL PACIENTE",
+    "DECLARACION DEL PACIENTE",
+    "AUTORIZO",
+    "CONSTANCIA",
+    "FIRMA DEL TRABAJADOR",
+    "FIRMA DEL PACIENTE",
+    "FIRMA DEL USUARIO",
+    "HUELLA",
+    "HABEAS DATA",
+]
+
+
+def es_contenido_legal_recomendacion(texto):
+    if not texto:
+        return False
+    limpio = re.sub(r"\s+", " ", str(texto)).strip()
+    return any(
+        re.search(patron, limpio, flags=re.IGNORECASE)
+        for patron in _PATRONES_LEGALES_RECOMENDACIONES
+    )
+
+
+def es_encabezado_legal(texto):
+    if not texto:
+        return False
+    normalizado = normalizar_etiqueta(texto)
+    return any(
+        encabezado in normalizado
+        for encabezado in _ENCABEZADOS_LEGALES
+    )
+
+
+def recortar_contenido_legal(texto):
+    """
+    Corta una recomendación justo antes del primer consentimiento,
+    autorización, firma o declaración legal.
+    """
+    if not texto:
+        return ""
+
+    texto = str(texto)
+    posiciones = []
+    for patron in _PATRONES_LEGALES_RECOMENDACIONES:
+        coincidencia = re.search(patron, texto, flags=re.IGNORECASE)
+        if coincidencia:
+            posiciones.append(coincidencia.start())
+
+    if posiciones:
+        texto = texto[:min(posiciones)]
+
+    lineas_validas = []
+    for linea in texto.splitlines():
+        if es_encabezado_legal(linea) or es_contenido_legal_recomendacion(linea):
+            break
+        lineas_validas.append(linea)
+
+    return re.sub(r"\s+", " ", " ".join(lineas_validas)).strip(" .;:-_/|")
+
+
+def filtrar_recomendaciones_clinicas(recomendaciones):
+    """
+    Filtro final obligatorio. No permite que consentimientos, autorizaciones,
+    firmas, habeas data o declaraciones entren al Word.
+    """
+    resultado = []
+    vistos = set()
+
+    for recomendacion in recomendaciones or []:
+        limpia = recortar_contenido_legal(recomendacion)
+
+        limpia = re.sub(
+            r"^(?:Audiometría|Espirometría|Optometría|Visiometría|"
+            r"Examen Clínico Ocupacional|Énfasis Osteomuscular|"
+            r"Electrocardiograma|Frotis|Cuadro Hemático|Colesterol|"
+            r"Triglicéridos|Parcial de Orina|VSH|PCR)\s*:\s*$",
+            "",
+            limpia,
+            flags=re.IGNORECASE,
+        ).strip()
+
+        if (
+            not limpia
+            or es_vacio_o_estado(limpia)
+            or es_contenido_legal_recomendacion(limpia)
+        ):
+            continue
+
+        clave = normalizar_etiqueta(limpia)
+        if clave not in vistos:
+            vistos.add(clave)
+            resultado.append(limpia)
+
+    return resultado
+
+
+def _limpiar_celda_certificado(valor):
+    if valor is None:
+        return ""
+    valor = str(valor).replace("\x00", " ")
+    valor = re.sub(r"[ \t]+", " ", valor)
+    valor = re.sub(r"\s*\n\s*", "\n", valor)
+    return valor.strip(" |/-,_.:")
+
+
+def _normalizar_lista_celdas(fila):
+    return [
+        _limpiar_celda_certificado(celda)
+        for celda in (fila or [])
+    ]
+
+
+def _contiene_alguna_etiqueta(texto, etiquetas):
+    normalizado = normalizar_etiqueta(texto)
+    return any(
+        normalizar_etiqueta(etiqueta) in normalizado
+        for etiqueta in etiquetas
+    )
+
+
+def _es_rotulo_general(texto):
+    normalizado = normalizar_etiqueta(texto)
+    rotulos = (
+        _ETIQUETAS_NOMBRE_CERTIFICADO
+        + _ETIQUETAS_CARGO_CERTIFICADO
+        + _ETIQUETAS_FECHA_CERTIFICADO
+        + _ETIQUETAS_LUGAR_CERTIFICADO
+        + _ETIQUETAS_IPS_CERTIFICADO
+        + [
+            "DOCUMENTO",
+            "IDENTIFICACIÓN",
+            "IDENTIFICACION",
+            "CÉDULA",
+            "CEDULA",
+            "EDAD",
+            "GÉNERO",
+            "GENERO",
+            "SEXO",
+            "EMPRESA",
+            "EPS",
+            "ARL",
+            "AFP",
+            "DÍA",
+            "DIA",
+            "MES",
+            "AÑO",
+            "ANO",
+        ]
+    )
+    return any(
+        normalizado == normalizar_etiqueta(rotulo)
+        or normalizado.startswith(normalizar_etiqueta(rotulo) + " ")
+        for rotulo in rotulos
+    )
+
+
+def _extraer_valor_inline(celda, etiquetas):
+    celda = _limpiar_celda_certificado(celda)
+    if not celda:
+        return ""
+
+    # Admite "CARGO: CONDUCTOR" y celdas con salto de línea.
+    plano = re.sub(r"\s*\n\s*", " | ", celda)
+    for etiqueta in sorted(etiquetas, key=len, reverse=True):
+        patron = re.compile(
+            rf"^\s*{re.escape(etiqueta)}\s*(?:[:=\-|]\s*)?(.+)$",
+            flags=re.IGNORECASE,
+        )
+        coincidencia = patron.match(plano)
+        if coincidencia:
+            resto = coincidencia.group(1).strip(" |/-,_.:")
+            if resto and not _es_rotulo_general(resto):
+                return resto
+
+        lineas = [
+            linea.strip(" |/-,_.:")
+            for linea in celda.splitlines()
+            if linea.strip(" |/-,_.:")
+        ]
+        if (
+            lineas
+            and normalizar_etiqueta(lineas[0])
+            == normalizar_etiqueta(etiqueta)
+            and len(lineas) > 1
+        ):
+            resto = " ".join(lineas[1:]).strip(" |/-,_.:")
+            if resto and not _es_rotulo_general(resto):
+                return resto
+
+    return ""
+
+
+def _nombre_muy_valido(valor):
+    limpio = limpiar_candidato_campo(valor, "nombre")
+    if not candidato_nombre_valido(limpio):
+        return False
+
+    norm = normalizar_etiqueta(limpio)
+    prohibidas = [
+        "FECHA",
+        "REALIZACION",
+        "EXAMEN",
+        "CARGO",
+        "EMPRESA",
+        "IDENTIFICACION",
+        "DOCUMENTO",
+        "CERTIFICADO",
+        "CONCEPTO",
+        "RECOMENDACION",
+        "VIGILANCIA",
+        "CONSENTIMIENTO",
+        "TRABAJADOR",
+        "APELLIDOS Y NOMBRES",
+        "NOMBRES Y APELLIDOS",
+    ]
+    if any(palabra in norm for palabra in prohibidas):
+        return False
+
+    tokens = re.findall(
+        r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]+",
+        limpio,
+    )
+    return 2 <= len(tokens) <= 7
+
+
+def _cargo_muy_valido(valor):
+    limpio = limpiar_candidato_campo(valor, "cargo")
+    if not candidato_cargo_valido(limpio):
+        return False
+
+    norm = normalizar_etiqueta(limpio)
+    prohibidas = [
+        "FECHA",
+        "REALIZACION",
+        "EXAMEN",
+        "DOCUMENTO",
+        "IDENTIFICACION",
+        "NOMBRES Y APELLIDOS",
+        "APELLIDOS Y NOMBRES",
+        "CERTIFICADO",
+        "CONSENTIMIENTO",
+        "DIA MES ANO",
+    ]
+    return not any(palabra in norm for palabra in prohibidas)
+
+
+def _lugar_muy_valido(valor):
+    limpio = limpiar_candidato_campo(valor, "lugar")
+    if not candidato_lugar_valido(limpio):
+        return False
+
+    norm = normalizar_etiqueta(limpio)
+    prohibidas = [
+        "FECHA",
+        "REALIZACION",
+        "EXAMEN",
+        "DIA",
+        "MES",
+        "ANO",
+        "DOCUMENTO",
+        "IDENTIFICACION",
+        "CONSENTIMIENTO",
+    ]
+    return not any(palabra == norm for palabra in prohibidas)
+
+
+def _agregar_candidato_especial(
+    candidatos,
+    tipo,
+    puntaje,
+    valor,
+    origen,
+):
+    if not valor:
+        return
+
+    validadores = {
+        "nombre": _nombre_muy_valido,
+        "cargo": _cargo_muy_valido,
+        "lugar": _lugar_muy_valido,
+    }
+    limpio = limpiar_candidato_campo(valor, tipo)
+    if validadores[tipo](limpio):
+        candidatos[tipo].append(
+            (puntaje, limpio, origen)
+        )
+
+
+def _buscar_valor_debajo(
+    filas,
+    fila_inicio,
+    columna,
+    tipo,
+    max_filas=5,
+):
+    """
+    Formato 1 de las imágenes:
+    ETIQUETA
+    VALOR
+
+    También admite celdas combinadas, porque revisa la misma columna,
+    celdas cercanas y la fila completa.
+    """
+    validadores = {
+        "nombre": _nombre_muy_valido,
+        "cargo": _cargo_muy_valido,
+        "lugar": _lugar_muy_valido,
+    }
+    validador = validadores[tipo]
+
+    for salto in range(1, max_filas + 1):
+        indice = fila_inicio + salto
+        if indice >= len(filas):
+            break
+
+        fila = filas[indice]
+        if not any(fila):
+            continue
+
+        opciones = []
+
+        if columna < len(fila):
+            opciones.append(fila[columna])
+
+        # Las tablas con celdas fusionadas pueden desplazar el valor una columna.
+        for desplazamiento in (-2, -1, 1, 2):
+            pos = columna + desplazamiento
+            if 0 <= pos < len(fila):
+                opciones.append(fila[pos])
+
+        # Si la fila contiene un único texto claro, se considera el valor
+        # correspondiente al encabezado superior.
+        no_vacias = [
+            celda for celda in fila
+            if celda and not _es_rotulo_general(celda)
+        ]
+        if len(no_vacias) == 1:
+            opciones.extend(no_vacias)
+
+        for opcion in opciones:
+            limpio = limpiar_candidato_campo(opcion, tipo)
+            if validador(limpio):
+                return limpio, salto
+
+    return "", 0
+
+
+def _buscar_valor_derecha(fila, columna, tipo):
+    """
+    Formato 2 de las imágenes:
+    ETIQUETA | VALOR
+    """
+    validadores = {
+        "nombre": _nombre_muy_valido,
+        "cargo": _cargo_muy_valido,
+        "lugar": _lugar_muy_valido,
+    }
+    validador = validadores[tipo]
+
+    for pos in range(columna + 1, min(len(fila), columna + 5)):
+        celda = fila[pos]
+        if not celda or _es_rotulo_general(celda):
+            continue
+        limpio = limpiar_candidato_campo(celda, tipo)
+        if validador(limpio):
+            return limpio, pos - columna
+
+    return "", 0
+
+
+def _fecha_desde_componentes(dia, mes, anio):
+    try:
+        dia = int(str(dia).strip())
+        mes = int(str(mes).strip())
+        anio = int(str(anio).strip())
+        if anio < 100:
+            anio += 2000
+        return datetime.date(anio, mes, dia)
+    except (TypeError, ValueError):
+        return None
+
+
+def _buscar_fecha_en_texto(texto):
+    if not texto:
+        return None
+
+    texto = re.sub(r"\s+", " ", str(texto))
+
+    patrones = [
+        (
+            re.compile(
+                r"\b(20\d{2})\s*[-/.\s]\s*(\d{1,2})\s*[-/.\s]\s*(\d{1,2})\b"
+            ),
+            lambda m: _fecha_desde_componentes(
+                m.group(3),
+                m.group(2),
+                m.group(1),
+            ),
+        ),
+        (
+            re.compile(
+                r"\b(\d{1,2})\s*[-/.\s]\s*(\d{1,2})\s*[-/.\s]\s*(20\d{2})\b"
+            ),
+            lambda m: _fecha_desde_componentes(
+                m.group(1),
+                m.group(2),
+                m.group(3),
+            ),
+        ),
+    ]
+
+    for patron, constructor in patrones:
+        coincidencia = patron.search(texto)
+        if coincidencia:
+            fecha = constructor(coincidencia)
+            if fecha:
+                return fecha
+
+    meses = {
+        "enero": 1,
+        "febrero": 2,
+        "marzo": 3,
+        "abril": 4,
+        "mayo": 5,
+        "junio": 6,
+        "julio": 7,
+        "agosto": 8,
+        "septiembre": 9,
+        "octubre": 10,
+        "noviembre": 11,
+        "diciembre": 12,
+    }
+    coincidencia = re.search(
+        r"\b(\d{1,2})\s+de\s+([a-záéíóúüñ]+)\s+de\s+(20\d{2})\b",
+        texto,
+        flags=re.IGNORECASE,
+    )
+    if coincidencia:
+        mes = meses.get(coincidencia.group(2).lower())
+        if mes:
+            return _fecha_desde_componentes(
+                coincidencia.group(1),
+                mes,
+                coincidencia.group(3),
+            )
+
+    return None
+
+
+def _buscar_fecha_tabla(filas, fila_inicio, columna_inicio=0):
+    """
+    Reconoce ambos diseños:
+    - FECHA DE REALIZACIÓN DEL EXAMEN | DÍA | MES | AÑO / 04 | 06 | 2026
+    - FECHA DE REALIZACIÓN DEL EXAMEN | 04/06/2026
+    """
+    limite = min(len(filas), fila_inicio + 7)
+
+    # Primero intenta una fecha completa en las filas cercanas.
+    for indice in range(fila_inicio, limite):
+        fila = filas[indice]
+        texto_fila = " | ".join(celda for celda in fila if celda)
+        fecha = _buscar_fecha_en_texto(texto_fila)
+        if fecha:
+            return fecha, 250 - (indice - fila_inicio)
+
+    # Luego localiza subencabezados DÍA, MES y AÑO.
+    for indice in range(fila_inicio, limite):
+        fila = filas[indice]
+        normalizadas = [
+            normalizar_etiqueta(celda)
+            for celda in fila
+        ]
+
+        indice_dia = next(
+            (
+                pos for pos, valor in enumerate(normalizadas)
+                if valor in {"DIA", "DÍA"}
+            ),
+            None,
+        )
+        indice_mes = next(
+            (
+                pos for pos, valor in enumerate(normalizadas)
+                if valor == "MES"
+            ),
+            None,
+        )
+        indice_anio = next(
+            (
+                pos for pos, valor in enumerate(normalizadas)
+                if valor in {"ANO", "AÑO"}
+            ),
+            None,
+        )
+
+        if None not in (
+            indice_dia,
+            indice_mes,
+            indice_anio,
+        ):
+            for salto in range(1, 4):
+                fila_valor_idx = indice + salto
+                if fila_valor_idx >= len(filas):
+                    break
+
+                valores = filas[fila_valor_idx]
+                if max(
+                    indice_dia,
+                    indice_mes,
+                    indice_anio,
+                ) >= len(valores):
+                    continue
+
+                fecha = _fecha_desde_componentes(
+                    valores[indice_dia],
+                    valores[indice_mes],
+                    valores[indice_anio],
+                )
+                if fecha:
+                    return fecha, 270 - salto
+
+    # Respaldo: tres números consecutivos cerca del encabezado.
+    for indice in range(fila_inicio + 1, limite):
+        numeros = []
+        for celda in filas[indice]:
+            if re.fullmatch(r"\d{1,4}", celda or ""):
+                numeros.append(int(celda))
+
+        for pos in range(0, len(numeros) - 2):
+            trio = numeros[pos:pos + 3]
+
+            if 1 <= trio[0] <= 31 and 1 <= trio[1] <= 12 and 2000 <= trio[2] <= 2100:
+                fecha = _fecha_desde_componentes(
+                    trio[0],
+                    trio[1],
+                    trio[2],
+                )
+                if fecha:
+                    return fecha, 230
+
+            if 2000 <= trio[0] <= 2100 and 1 <= trio[1] <= 12 and 1 <= trio[2] <= 31:
+                fecha = _fecha_desde_componentes(
+                    trio[2],
+                    trio[1],
+                    trio[0],
+                )
+                if fecha:
+                    return fecha, 230
+
+    return None, 0
+
+
+def _quitar_fecha_para_lugar(texto):
+    if not texto:
+        return ""
+
+    valor = str(texto)
+    valor = re.sub(
+        r"\b20\d{2}\s*[-/.\s]\s*\d{1,2}\s*[-/.\s]\s*\d{1,2}\b",
+        " ",
+        valor,
+    )
+    valor = re.sub(
+        r"\b\d{1,2}\s*[-/.\s]\s*\d{1,2}\s*[-/.\s]\s*20\d{2}\b",
+        " ",
+        valor,
+    )
+    valor = re.sub(
+        r"\b\d{1,2}\s+de\s+[a-záéíóúüñ]+\s+de\s+20\d{2}\b",
+        " ",
+        valor,
+        flags=re.IGNORECASE,
+    )
+    valor = re.sub(
+        r"\b(?:FECHA|DÍA|DIA|MES|AÑO|ANO|CIUDAD|MUNICIPIO|LUGAR|"
+        r"REALIZACIÓN|REALIZACION|DEL EXAMEN|DE LOS EXÁMENES|"
+        r"DE LOS EXAMENES|SEDE)\b",
+        " ",
+        valor,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", valor).strip(" |/-,_.:")
+
+
+def _extraer_lineas_por_coordenadas(page):
+    """
+    Reconstruye líneas respetando la posición horizontal de las palabras.
+    Conserva separaciones amplias para que el analizador detecte columnas.
+    """
+    try:
+        palabras = page.extract_words(
+            x_tolerance=2,
+            y_tolerance=3,
+            keep_blank_chars=False,
+            use_text_flow=False,
+        ) or []
+    except Exception:
+        return []
+
+    grupos = []
+    for palabra in sorted(
+        palabras,
+        key=lambda item: (
+            round(float(item["top"]), 1),
+            float(item["x0"]),
+        ),
+    ):
+        top = float(palabra["top"])
+        grupo = None
+
+        for existente in reversed(grupos[-10:]):
+            if abs(existente["top"] - top) <= 3.2:
+                grupo = existente
+                break
+
+        if grupo is None:
+            grupo = {
+                "top": top,
+                "words": [],
+            }
+            grupos.append(grupo)
+
+        grupo["words"].append(palabra)
+
+    lineas = []
+    for grupo in grupos:
+        palabras_linea = sorted(
+            grupo["words"],
+            key=lambda item: float(item["x0"]),
+        )
+        partes = []
+        x1_anterior = None
+
+        for palabra in palabras_linea:
+            if x1_anterior is not None:
+                separacion = float(palabra["x0"]) - x1_anterior
+                partes.append(
+                    "    " if separacion > 16 else " "
+                )
+            partes.append(str(palabra["text"]))
+            x1_anterior = float(palabra["x1"])
+
+        linea = "".join(partes).strip()
+        if linea:
+            lineas.append(linea)
+
+    return lineas
+
+
+def _ocr_pagina_si_disponible(page):
+    """
+    OCR complementario para certificados escaneados.
+    Si Tesseract no está instalado, la aplicación continúa con pdfplumber.
+    """
+    if not OCR_DISPONIBLE:
+        return ""
+
+    try:
+        imagen = page.to_image(
+            resolution=230
+        ).original.convert("L")
+        imagen = ImageOps.autocontrast(imagen)
+        imagen = ImageEnhance.Contrast(
+            imagen
+        ).enhance(1.35)
+        imagen = imagen.filter(
+            ImageFilter.SHARPEN
+        )
+
+        texto = pytesseract.image_to_string(
+            imagen,
+            lang="spa+eng",
+            config="--oem 1 --psm 6",
+            timeout=80,
+        )
+        return re.sub(
+            r"\n{3,}",
+            "\n\n",
+            texto or "",
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _extraer_de_filas_certificado(
+    filas,
+    candidatos,
+    fechas,
+    bonus=0,
+    origen="tabla",
+):
+    """
+    Procesa los dos formatos de las imágenes sin alterar los demás datos.
+    """
+    for fila_idx, fila in enumerate(filas):
+        if not any(fila):
+            continue
+
+        for columna, celda in enumerate(fila):
+            if not celda:
+                continue
+
+            # NOMBRE: valor en la misma celda, a la derecha o debajo.
+            if _contiene_alguna_etiqueta(
+                celda,
+                _ETIQUETAS_NOMBRE_CERTIFICADO,
+            ):
+                inline = _extraer_valor_inline(
+                    celda,
+                    _ETIQUETAS_NOMBRE_CERTIFICADO,
+                )
+                _agregar_candidato_especial(
+                    candidatos,
+                    "nombre",
+                    430 + bonus,
+                    inline,
+                    f"{origen}: nombre en misma celda",
+                )
+
+                derecha, distancia = _buscar_valor_derecha(
+                    fila,
+                    columna,
+                    "nombre",
+                )
+                _agregar_candidato_especial(
+                    candidatos,
+                    "nombre",
+                    420 - distancia + bonus,
+                    derecha,
+                    f"{origen}: nombre a la derecha",
+                )
+
+                debajo, salto = _buscar_valor_debajo(
+                    filas,
+                    fila_idx,
+                    columna,
+                    "nombre",
+                )
+                _agregar_candidato_especial(
+                    candidatos,
+                    "nombre",
+                    425 - salto + bonus,
+                    debajo,
+                    f"{origen}: nombre debajo",
+                )
+
+            # CARGO: mismo esquema.
+            if _contiene_alguna_etiqueta(
+                celda,
+                _ETIQUETAS_CARGO_CERTIFICADO,
+            ):
+                inline = _extraer_valor_inline(
+                    celda,
+                    _ETIQUETAS_CARGO_CERTIFICADO,
+                )
+                _agregar_candidato_especial(
+                    candidatos,
+                    "cargo",
+                    420 + bonus,
+                    inline,
+                    f"{origen}: cargo en misma celda",
+                )
+
+                derecha, distancia = _buscar_valor_derecha(
+                    fila,
+                    columna,
+                    "cargo",
+                )
+                _agregar_candidato_especial(
+                    candidatos,
+                    "cargo",
+                    410 - distancia + bonus,
+                    derecha,
+                    f"{origen}: cargo a la derecha",
+                )
+
+                debajo, salto = _buscar_valor_debajo(
+                    filas,
+                    fila_idx,
+                    columna,
+                    "cargo",
+                )
+                _agregar_candidato_especial(
+                    candidatos,
+                    "cargo",
+                    415 - salto + bonus,
+                    debajo,
+                    f"{origen}: cargo debajo",
+                )
+
+            # FECHA: detecta fecha completa o DÍA/MES/AÑO en filas siguientes.
+            if _contiene_alguna_etiqueta(
+                celda,
+                _ETIQUETAS_FECHA_CERTIFICADO,
+            ):
+                fecha_inline = _buscar_fecha_en_texto(celda)
+                if fecha_inline:
+                    fechas.append(
+                        (
+                            440 + bonus,
+                            fecha_inline,
+                            f"{origen}: fecha misma celda",
+                        )
+                    )
+
+                fecha_tabla, puntaje = _buscar_fecha_tabla(
+                    filas,
+                    fila_idx,
+                    columna,
+                )
+                if fecha_tabla:
+                    fechas.append(
+                        (
+                            puntaje + bonus,
+                            fecha_tabla,
+                            f"{origen}: fecha por componentes",
+                        )
+                    )
+
+            # LUGAR: valor en línea, derecha o debajo.
+            if _contiene_alguna_etiqueta(
+                celda,
+                _ETIQUETAS_LUGAR_CERTIFICADO,
+            ):
+                inline = _quitar_fecha_para_lugar(
+                    _extraer_valor_inline(
+                        celda,
+                        _ETIQUETAS_LUGAR_CERTIFICADO,
+                    )
+                )
+                _agregar_candidato_especial(
+                    candidatos,
+                    "lugar",
+                    435 + bonus,
+                    inline,
+                    f"{origen}: lugar misma celda",
+                )
+
+                derecha, distancia = _buscar_valor_derecha(
+                    fila,
+                    columna,
+                    "lugar",
+                )
+                _agregar_candidato_especial(
+                    candidatos,
+                    "lugar",
+                    425 - distancia + bonus,
+                    _quitar_fecha_para_lugar(derecha),
+                    f"{origen}: lugar a la derecha",
+                )
+
+                debajo, salto = _buscar_valor_debajo(
+                    filas,
+                    fila_idx,
+                    columna,
+                    "lugar",
+                )
+                _agregar_candidato_especial(
+                    candidatos,
+                    "lugar",
+                    430 - salto + bonus,
+                    _quitar_fecha_para_lugar(debajo),
+                    f"{origen}: lugar debajo",
+                )
+
+            # La IPS es respaldo, no desplaza una ciudad explícita.
+            if _contiene_alguna_etiqueta(
+                celda,
+                _ETIQUETAS_IPS_CERTIFICADO,
+            ):
+                inline = _extraer_valor_inline(
+                    celda,
+                    _ETIQUETAS_IPS_CERTIFICADO,
+                )
+                _agregar_candidato_especial(
+                    candidatos,
+                    "lugar",
+                    260 + bonus,
+                    inline,
+                    f"{origen}: IPS explícita",
+                )
+
+
+def _filas_desde_lineas(lineas):
+    """
+    Convierte texto visual/OCR en filas para reutilizar el mismo extractor.
+    Las separaciones amplias y barras se interpretan como columnas.
+    """
+    filas = []
+    for linea in lineas:
+        linea = str(linea).strip()
+        if not linea:
+            continue
+
+        columnas = [
+            _limpiar_celda_certificado(columna)
+            for columna in re.split(
+                r"\s{3,}|\t+|\|",
+                linea,
+            )
+        ]
+        columnas = [
+            columna
+            for columna in columnas
+            if columna
+        ]
+        if columnas:
+            filas.append(columnas)
+
+    return filas
+
+
+def extraer_metadatos_pdf_estructurados(
+    pdf_raw_data,
+    texto_completo="",
+):
+    """
+    Extractor prioritario de nombre, cargo, fecha y lugar.
+
+    Orden de confianza:
+    1. tablas reales;
+    2. coordenadas de palabras;
+    3. OCR;
+    4. texto consolidado existente.
+
+    No modifica ninguna otra función o campo del Portal SST.
+    """
+    candidatos = {
+        "nombre": [],
+        "cargo": [],
+        "lugar": [],
+    }
+    fechas = []
+
+    try:
+        documento = pdfplumber.open(
+            io.BytesIO(pdf_raw_data)
+        )
+    except Exception:
+        documento = None
+
+    if documento is not None:
+        with documento as p_file:
+            for numero_pagina, page in enumerate(
+                p_file.pages,
+                start=1,
+            ):
+                bonus = max(
+                    0,
+                    35 - (numero_pagina - 1) * 8,
+                )
+
+                # A. Tablas detectadas por bordes/celdas.
+                try:
+                    tablas = page.extract_tables() or []
+                except Exception:
+                    tablas = []
+
+                for tabla in tablas:
+                    filas = [
+                        _normalizar_lista_celdas(fila)
+                        for fila in (tabla or [])
+                    ]
+                    _extraer_de_filas_certificado(
+                        filas,
+                        candidatos,
+                        fechas,
+                        bonus=bonus,
+                        origen=(
+                            f"tabla página {numero_pagina}"
+                        ),
+                    )
+
+                # B. Formato visual sin bordes detectables.
+                lineas_coordenadas = (
+                    _extraer_lineas_por_coordenadas(page)
+                )
+                filas_coordenadas = _filas_desde_lineas(
+                    lineas_coordenadas
+                )
+                _extraer_de_filas_certificado(
+                    filas_coordenadas,
+                    candidatos,
+                    fechas,
+                    bonus=bonus - 20,
+                    origen=(
+                        f"coordenadas página {numero_pagina}"
+                    ),
+                )
+
+                # C. OCR, especialmente para imágenes escaneadas.
+                texto_base = page.extract_text(
+                    layout=False
+                ) or ""
+                requiere_ocr = (
+                    numero_pagina <= 2
+                    or len(
+                        re.sub(
+                            r"\s+",
+                            "",
+                            texto_base,
+                        )
+                    ) < 150
+                )
+                if requiere_ocr:
+                    texto_ocr = _ocr_pagina_si_disponible(
+                        page
+                    )
+                    if texto_ocr:
+                        filas_ocr = _filas_desde_lineas(
+                            texto_ocr.splitlines()
+                        )
+                        _extraer_de_filas_certificado(
+                            filas_ocr,
+                            candidatos,
+                            fechas,
+                            bonus=bonus - 35,
+                            origen=(
+                                f"OCR página {numero_pagina}"
+                            ),
+                        )
+
+                        fecha_ocr = _buscar_fecha_en_texto(
+                            texto_ocr
+                        )
+                        if fecha_ocr:
+                            fechas.append(
+                                (
+                                    250 + bonus,
+                                    fecha_ocr,
+                                    (
+                                        f"OCR página "
+                                        f"{numero_pagina}"
+                                    ),
+                                )
+                            )
+
+    # D. Analizador textual preexistente como respaldo.
+    if texto_completo:
+        respaldo = extraer_identidad_cargo_lugar(
+            texto_completo
+        )
+
+        _agregar_candidato_especial(
+            candidatos,
+            "nombre",
+            170,
+            respaldo.get("nombre", ""),
+            "analizador textual existente",
+        )
+        _agregar_candidato_especial(
+            candidatos,
+            "cargo",
+            165,
+            respaldo.get("cargo", ""),
+            "analizador textual existente",
+        )
+        _agregar_candidato_especial(
+            candidatos,
+            "lugar",
+            175,
+            respaldo.get("lugar", ""),
+            "analizador textual existente",
+        )
+
+        if respaldo.get("fecha"):
+            fechas.append(
+                (
+                    165,
+                    respaldo["fecha"],
+                    "analizador textual existente",
+                )
+            )
+
+    resultado = {
+        "nombre": elegir_mejor_candidato(
+            candidatos["nombre"],
+            "nombre",
+        ),
+        "cargo": elegir_mejor_candidato(
+            candidatos["cargo"],
+            "cargo",
+        ),
+        "lugar": elegir_mejor_candidato(
+            candidatos["lugar"],
+            "lugar",
+        ),
+    }
+
+    fechas_validas = [
+        (puntaje, fecha, origen)
+        for puntaje, fecha, origen in fechas
+        if isinstance(fecha, datetime.date)
+        and 2000 <= fecha.year <= 2100
+    ]
+    if fechas_validas:
+        resultado["fecha"] = max(
+            fechas_validas,
+            key=lambda item: item[0],
+        )[1]
+
+    return resultado
+
+
+
+
 def extraer_texto_pdf_robusto(pdf_raw_data):
     """
-    Conserva el texto normal y agrega una representación de las tablas.
-    Esto mejora especialmente nombre, cargo y ciudad sin alterar el resto
-    del análisis existente.
+    Conserva la lectura original y añade:
+    - distribución visual;
+    - líneas reconstruidas con coordenadas;
+    - filas de tablas;
+    - OCR complementario en las dos primeras páginas y cuando no hay texto.
+
+    No altera los demás campos ni el flujo de generación.
     """
     lineas_salida = []
     vistos = set()
 
-    def agregar(fragmento):
+    def agregar(fragmento, permitir_repetido=False):
         if not fragmento:
             return
         for linea in str(fragmento).splitlines():
-            # Se mantienen las separaciones amplias porque representan columnas
-            # y permiten asociar correctamente encabezados con sus valores.
             linea = linea.replace("\t", "    ").strip()
             if not linea:
                 continue
             clave = normalizar_etiqueta(linea)
-            if clave and clave not in vistos:
+            if not clave:
+                continue
+            if permitir_repetido or clave not in vistos:
                 vistos.add(clave)
                 lineas_salida.append(linea)
 
@@ -883,34 +2113,54 @@ def extraer_texto_pdf_robusto(pdf_raw_data):
                 y_tolerance=3,
                 layout=False,
             ) or ""
+
             agregar(texto_layout)
             agregar(texto_normal)
 
-            tablas = page.extract_tables() or []
+            # Reconstrucción por coordenadas: especialmente útil para
+            # encabezados NOMBRE | CARGO y su fila de valores.
+            for linea in _extraer_lineas_por_coordenadas(page):
+                agregar(linea)
+
+            try:
+                tablas = page.extract_tables() or []
+            except Exception:
+                tablas = []
+
             for tabla in tablas:
                 for fila in tabla or []:
-                    celdas = []
-                    for celda in fila or []:
-                        celda_limpia = re.sub(
+                    celdas = [
+                        re.sub(
                             r"\s+",
                             " ",
                             (celda or "").replace("\n", " "),
                         ).strip()
-                        celdas.append(celda_limpia)
+                        for celda in (fila or [])
+                    ]
                     if any(celdas):
-                        agregar(" | ".join(celdas))
+                        agregar(" | ".join(celdas), permitir_repetido=True)
+
+            # El OCR se usa como respaldo para imágenes o texto mal codificado.
+            texto_existente = f"{texto_layout}\n{texto_normal}".strip()
+            requiere_ocr = (
+                numero_pagina <= 2
+                or len(re.sub(r"\s+", "", texto_existente)) < 120
+            )
+            if requiere_ocr:
+                texto_ocr = _ocr_pagina_si_disponible(page)
+                if texto_ocr:
+                    agregar(texto_ocr)
 
     return "\n".join(lineas_salida)
 
-
 # --- ANALIZADOR INTELIGENTE MULTILÍNEA GENERALIZADO ---
-def analizar_pdf_inteligente(texto):
+def analizar_pdf_inteligente(texto, metadatos_pdf=None):
     datos = {
         "nombre": "", "cargo": "", "tipo_examen": "PERIODICO",
         "examenes_lista": [], "recomendaciones_lista": [], "vigilancia_lista": [],
         "observaciones": "", "remisiones": "No", "consecutivo": "",
         "vigilancia_programa": "NINGUNO",
-        "lugar": "Tunja",
+        "lugar": "",
         "fecha": datetime.date.today()
     }
     if not texto:
@@ -933,6 +2183,18 @@ def analizar_pdf_inteligente(texto):
 
     if identificacion.get("fecha"):
         datos["fecha"] = identificacion["fecha"]
+
+    # Los valores obtenidos directamente desde celdas y coordenadas del PDF
+    # tienen prioridad sobre el texto plano, porque conservan mejor la tabla.
+    metadatos_pdf = metadatos_pdf or {}
+    if metadatos_pdf.get("nombre"):
+        datos["nombre"] = metadatos_pdf["nombre"]
+    if metadatos_pdf.get("cargo"):
+        datos["cargo"] = metadatos_pdf["cargo"]
+    if metadatos_pdf.get("lugar"):
+        datos["lugar"] = metadatos_pdf["lugar"]
+    if metadatos_pdf.get("fecha"):
+        datos["fecha"] = metadatos_pdf["fecha"]
 
     EXAMS_MAP = {
         "AUDIOMETRIA DE TONOS": "Audiometría", "AUDIOMETRIA": "Audiometría",
@@ -977,22 +2239,76 @@ def analizar_pdf_inteligente(texto):
             continue
             
         if formato_grilla_detectado:
-            if any(stop in linea_upper for stop in ["OTRAS OBSERVACIONES", "REMISIONES:", "ATENTAMENTE"]):
+            if (
+                any(
+                    stop in linea_upper
+                    for stop in [
+                        "OTRAS OBSERVACIONES",
+                        "REMISIONES:",
+                        "ATENTAMENTE",
+                        "CONSENTIMIENTO",
+                        "AUTORIZO",
+                        "TRATAMIENTO DE DATOS",
+                        "HABEAS DATA",
+                        "FIRMA DEL TRABAJADOR",
+                        "FIRMA DEL PACIENTE",
+                        "DECLARO",
+                        "MANIFIESTO",
+                    ]
+                )
+                or es_encabezado_legal(linea_limpia)
+                or es_contenido_legal_recomendacion(linea_limpia)
+            ):
                 formato_grilla_detectado = False
+                continue
             else:
-                columnas = [col.strip(" |/-,_.") for col in re.split(r'\s{2,}|\|', linea_limpia) if col.strip()]
+                columnas = [
+                    col.strip(" |/-,_.")
+                    for col in re.split(r'\s{2,}|\|', linea_limpia)
+                    if col.strip()
+                ]
                 for col in columnas:
-                    if not es_vacio_o_estado(col):
-                        rec_fmt = a_caso_oracion(col)
+                    col_clinica = recortar_contenido_legal(col)
+                    if (
+                        col_clinica
+                        and not es_vacio_o_estado(col_clinica)
+                        and not es_contenido_legal_recomendacion(col_clinica)
+                    ):
+                        rec_fmt = a_caso_oracion(col_clinica)
                         if rec_fmt and rec_fmt not in recoms_grilla_acumuladas:
                             recoms_grilla_acumuladas.append(rec_fmt)
                 continue
 
-        if any(stop in linea_upper for stop in ["OBSERVACIONES:", "OBSERVACION:", "REMISIONES:", "SISTEMA DE VIGILANCIA"]):
+        if (
+            any(
+                stop in linea_upper
+                for stop in [
+                    "OBSERVACIONES:",
+                    "OBSERVACION:",
+                    "REMISIONES:",
+                    "SISTEMA DE VIGILANCIA",
+                    "CONSENTIMIENTO",
+                    "AUTORIZO",
+                    "TRATAMIENTO DE DATOS",
+                    "HABEAS DATA",
+                    "FIRMA DEL TRABAJADOR",
+                    "FIRMA DEL PACIENTE",
+                    "DECLARO",
+                    "MANIFIESTO",
+                    "ATENTAMENTE",
+                ]
+            )
+            or es_encabezado_legal(linea_limpia)
+            or es_contenido_legal_recomendacion(linea_limpia)
+        ):
             in_exams_section = False
             if current_exam:
-                recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "")
+                contenido_actual = recoms_raw_dict.get(current_exam, "")
+                recoms_raw_dict[current_exam] = recortar_contenido_legal(
+                    contenido_actual
+                )
                 current_exam = None
+            continue
 
         matched_key = None
         for key in sorted(EXAMS_MAP.keys(), key=len, reverse=True):
@@ -1009,8 +2325,16 @@ def analizar_pdf_inteligente(texto):
             recoms_raw_dict[current_exam] = linea_limpia[idx:].strip(" :-,_/")
         else:
             if in_exams_section and current_exam and linea_limpia.strip():
-                if not (linea_limpia.isupper() and len(linea_limpia) > 10):
-                    recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "") + " " + linea_limpia.strip()
+                if (
+                    not es_encabezado_legal(linea_limpia)
+                    and not es_contenido_legal_recomendacion(linea_limpia)
+                    and not (linea_limpia.isupper() and len(linea_limpia) > 10)
+                ):
+                    recoms_raw_dict[current_exam] = (
+                        recoms_raw_dict.get(current_exam, "")
+                        + " "
+                        + linea_limpia.strip()
+                    )
 
     recoms_por_examen = []
     pve_detectados = set()
@@ -1026,6 +2350,7 @@ def analizar_pdf_inteligente(texto):
     else:
         for exam in examenes_detectados:
             rec_part = recoms_raw_dict.get(exam, "").strip()
+            rec_part = recortar_contenido_legal(rec_part)
             rec_part = re.sub(r'\s+', ' ', rec_part)
             rec_part = limpiar_ruido_columnas_final(rec_part)
             
@@ -1034,7 +2359,12 @@ def analizar_pdf_inteligente(texto):
                 valid_parts = []
                 for p in parts:
                     p_clean = p.strip(" .-_/()[]")
-                    if not es_vacio_o_estado(p_clean):
+                    p_clean = recortar_contenido_legal(p_clean)
+                    if (
+                        p_clean
+                        and not es_vacio_o_estado(p_clean)
+                        and not es_contenido_legal_recomendacion(p_clean)
+                    ):
                         valid_parts.append(a_caso_oracion(p_clean))
                         p_upper = p_clean.upper()
                         if any(re.search(patron, p_upper) for patron in [r'\bAUDITIV', r'\bRUIDO', r'\bOIDO', r'\bOÍDO', r'\bAUDIO']): pve_detectados.add("Conservación Auditiva")
@@ -1047,7 +2377,9 @@ def analizar_pdf_inteligente(texto):
 
     # CLAVE UNIFICADA EN ESPAÑOL DEFINITIVA
     datos["examenes_lista"] = examenes_detectados
-    datos["recomendaciones_lista"] = recoms_por_examen
+    datos["recomendaciones_lista"] = filtrar_recomendaciones_clinicas(
+        recoms_por_examen
+    )
     datos["vigilancia_lista"] = list(pve_detectados)
 
     # --- CORRECCIÓN INTEGRAL: EXTRACCIÓN ACOTA DE PROGRAMAS PVE ---
@@ -1456,8 +2788,15 @@ with col_izq:
                 pdf_raw_data = pdf.read()
                 st.session_state.pdfs_raw_bytes[pdf.name] = pdf_raw_data
                 texto_raw = extraer_texto_pdf_robusto(pdf_raw_data)
+                metadatos_pdf = extraer_metadatos_pdf_estructurados(
+                    pdf_raw_data,
+                    texto_raw,
+                )
                 st.session_state.textos_raw[pdf.name] = texto_raw
-                st.session_state.documentos[pdf.name] = analizar_pdf_inteligente(texto_raw)
+                st.session_state.documentos[pdf.name] = analizar_pdf_inteligente(
+                    texto_raw,
+                    metadatos_pdf=metadatos_pdf,
+                )
         
         st.markdown(f"""
             <div style='display:flex; gap:10px; margin-top:15px;'>
@@ -1503,7 +2842,8 @@ with col_der:
         doc_actual = st.session_state.documentos[archivo_seleccionado]
         
         col_f1, col_f2 = st.columns(2)
-        with col_f1: lugar = st.text_input("Lugar:", value=doc_actual.get("lugar", "Tunja"))
+        st.caption("Verifica nombre, cargo, fecha y lugar antes de generar el documento. Los campos siguen siendo editables.")
+        with col_f1: lugar = st.text_input("Lugar:", value=doc_actual.get("lugar", ""))
         with col_f2: fecha = st.date_input("Fecha:", value=doc_actual.get("fecha", datetime.date.today()))
         
         tipo_examen = st.text_input("Tipo de Examen:", value=doc_actual["tipo_examen"].upper())
