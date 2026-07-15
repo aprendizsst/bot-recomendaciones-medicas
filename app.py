@@ -367,7 +367,7 @@ def limpiar_ruido_columnas_final(texto):
     return texto.strip(" :-,_/")
 
 def intentar_parsear_fecha(fecha_str):
-    fecha_str = fecha_str.lower().strip(" :-,_/.()[]")
+    fecha_str = fecha_str.lower().strip(" :-,_/.()[]|")
     m_letras = re.search(r'(\d{1,2})\s+de\s+([a-zñáéíóúü]+)\s+de\s+(20\d{2})', fecha_str)
     if m_letras:
         dia = int(m_letras.group(1))
@@ -401,40 +401,41 @@ def analizar_pdf_inteligente(texto):
 
     lineas_raw = texto.split('\n')
 
-    # --- PRE-ESCÁNER DE GRILLAS COMPACTAS ---
+    # --- PRE-ESCÁNER CORREGIDO: SEPARACIÓN MEDIANTE ESPACIOS Y TUBERÍAS ---
     for idx, line in enumerate(lineas_raw):
         l_up = line.upper().strip()
         
         if "APELLIDOS Y NOMBRES" in l_up:
             if idx + 1 < len(lineas_raw):
                 l_val = lineas_raw[idx + 1].strip()
-                cols = [c.strip() for c in re.split(r'\s{2,}', l_val) if c.strip()]
-                if cols and not any(h in cols[0].upper() for h in ["GÉNERO", "EDAD", "DOCUMENTO", "TIPO"]):
+                cols = [c.strip(" |/-,_.") for c in re.split(r'\s{2,}|\|', l_val) if c.strip()]
+                if cols and not any(h in cols[0].upper() for h in ["GÉNERO", "EDAD", "DOCUMENTO", "TIPO", "APELLIDOS"]):
                     datos["nombre"] = cols[0].title()
 
         if "FECHA Y CIUDAD DE REALIZACIÓN" in l_up or "FECHA Y CIUDAD DE REALIZACION" in l_up:
             if idx + 1 < len(lineas_raw):
                 l_val = lineas_raw[idx + 1].strip()
-                m_f_grid = re.search(r'\b(\d{1,2})\s+(\d{1,2})\s+(20\d{2})\b', l_val)
+                # CORRECCIÓN DE RECOLECCIÓN TEMPORAL: Detecta separadores de celdas con la barra vertical |
+                m_f_grid = re.search(r'\b(\d{1,2})\s*[\s\|/-]\s*(\d{1,2})\s*[\s\|/-]\s*(20\d{2})\b', l_val)
                 if m_f_grid:
                     try:
                         datos["fecha"] = datetime.date(int(m_f_grid.group(3)), int(m_f_grid.group(2)), int(m_f_grid.group(1)))
                     except: pass
-                    resto = l_val[m_f_grid.end():].strip()
+                    resto = l_val[m_f_grid.end():].strip(" |/-,_.")
                     if resto:
-                        resto_clean = re.sub(r'\(.*?\)', '', resto).strip()
-                        if resto_clean and not resto_clean.upper() == "CIUDAD":
+                        resto_clean = re.sub(r'\(.*?\)', '', resto).strip(" |/-,_.")
+                        if resto_clean and not resto_clean.upper() in ["CIUDAD", "MUNICIPIO"]:
                             datos["lugar"] = resto_clean.title()
                 else:
-                    cols_fc = [c.strip() for c in re.split(r'\s{2,}', l_val) if c.strip()]
-                    if cols_fc and len(cols_fc[0]) > 2 and not cols_fc[0].upper() == "CIUDAD":
-                        datos["lugar"] = re.sub(r'\(.*?\)', '', cols_fc[0]).strip().title()
+                    cols_fc = [c.strip(" |/-,_.") for c in re.split(r'\s{2,}|\|', l_val) if c.strip()]
+                    if cols_fc and len(cols_fc[0]) > 2 and not cols_fc[0].upper() in ["CIUDAD", "MUNICIPIO"]:
+                        datos["lugar"] = re.sub(r'\(.*?\)', '', cols_fc[0]).strip(" |/-,_.").title()
 
-        if l_up == "CARGO":
+        if "CARGO" in l_up and len(l_up) < 10:
             if idx + 1 < len(lineas_raw):
                 l_val = lineas_raw[idx + 1].strip()
-                cols_c = [c.strip() for c in re.split(r'\s{2,}', l_val) if c.strip()]
-                if cols_c and not any(h in cols_c[0].upper() for h in ["EPS", "ARP", "AFP", "DATOS"]):
+                cols_c = [c.strip(" |/-,_.") for c in re.split(r'\s{2,}|\|', l_val) if c.strip()]
+                if cols_c and not any(h in cols_c[0].upper() for h in ["EPS", "ARP", "AFP", "DATOS", "CARGO"]):
                     datos["cargo"] = corregir_ortografia_sst(cols_c[0].strip()).title()
 
     # --- FALLBACKS LINEALES ---
@@ -506,11 +507,12 @@ def analizar_pdf_inteligente(texto):
             formato_grilla_detectado = True
             continue
             
+        # CORRECCIÓN DE EXTRACCIÓN: División por tuberías para no perder información en las columnas estructuradas
         if formato_grilla_detectado:
             if any(stop in linea_upper for stop in ["OTRAS OBSERVACIONES", "REMISIONES:", "ATENTAMENTE"]):
                 formato_grilla_detectado = False
             else:
-                columnas = [col.strip() for col in re.split(r'\s{2,}', linea_limpia) if col.strip()]
+                columnas = [col.strip(" |/-,_.") for col in re.split(r'\s{2,}|\|', linea_limpia) if col.strip()]
                 for col in columnas:
                     if not es_vacio_o_estado(col):
                         rec_fmt = a_caso_oracion(col)
@@ -523,24 +525,25 @@ def analizar_pdf_inteligente(texto):
             if current_exam:
                 recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "")
                 current_exam = None
-                
-        if in_exams_section:
-            matched_key = None
-            for key in sorted(EXAMS_MAP.keys(), key=len, reverse=True):
-                if key in linea_upper and linea_upper.find(key) < 15:
-                    matched_key = key
-                    break
-            
-            if matched_key:
-                current_exam = EXAMS_MAP[matched_key]
-                if current_exam not in examenes_detectados:
-                    examenes_detectados.append(current_exam)
-                idx = linea_upper.find(matched_key) + len(matched_key)
-                recoms_raw_dict[current_exam] = linea_limpia[idx:].strip(" :-,_/")
-            else:
-                if current_exam and linea_limpia.strip():
-                    if not (linea_limpia.isupper() and len(linea_limpia) > 10):
-                        recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "") + " " + linea_limpia.strip()
+
+        # CORRECCIÓN CLAVE: El verificador corre por fuera del freno de mano para reactivar la lectura si aparece un examen nuevo
+        matched_key = None
+        for key in sorted(EXAMS_MAP.keys(), key=len, reverse=True):
+            if key in linea_upper and linea_upper.find(key) < 15:
+                matched_key = key
+                break
+        
+        if matched_key:
+            in_exams_section = True  # Reactivación forzada de bloque médico
+            current_exam = EXAMS_MAP[matched_key]
+            if current_exam not in examenes_detectados:
+                examenes_detectados.append(current_exam)
+            idx = linea_upper.find(matched_key) + len(matched_key)
+            recoms_raw_dict[current_exam] = linea_limpia[idx:].strip(" :-,_/")
+        else:
+            if in_exams_section and current_exam and linea_limpia.strip():
+                if not (linea_limpia.isupper() and len(linea_limpia) > 10):
+                    recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "") + " " + linea_limpia.strip()
 
     recoms_por_examen = []
     pve_detectados = set()
@@ -575,11 +578,11 @@ def analizar_pdf_inteligente(texto):
                 if valid_parts:
                     recoms_por_examen.append(f"{exam}: {' - '.join(valid_parts)}")
 
+    # UNIFICACIÓN EXCLUSIVA DE RECOMENDACIONES EN LA VARIABLE DE CONTROL CORREGIDA
     datos["examenes_lista"] = examenes_detectados
     datos["recomendaciones_lista"] = recoms_por_examen
     datos["vigilancia_lista"] = list(pve_detectados)
 
-    # RECOLECCIÓN SECUENCIAL DE MÚLTIPLES PROGRAMAS SVE
     programas_encontrados = []
     patron_bloque_pve = r'(?:Ingresar al programa de vigilancia epidemiol[oó]gica o programa de prevenci[oó]n y promoci[oó]n)([\s\S]*?)(?:Remisiones:|Observaciones:|Otras Observaciones|Atentamente:|$)'
     m_bloque = re.search(patron_bloque_pve, texto, re.IGNORECASE)
@@ -675,11 +678,7 @@ def replace_placeholder_in_paragraph_runs(paragraph, placeholder, value):
             replaced = True
             
     if not replaced:
-        font_name = "Arial"
-        font_size = Pt(11)
-        bold = False
-        italic = False
-        color = None
+        font_name = "Arial"; font_size = Pt(11); bold = False; italic = False; color = None
         if paragraph.runs:
             for r in paragraph.runs:
                 if r.text.strip():
@@ -692,10 +691,7 @@ def replace_placeholder_in_paragraph_runs(paragraph, placeholder, value):
         full_text = paragraph.text.replace(placeholder, value)
         paragraph.text = ""
         new_run = paragraph.add_run(full_text)
-        new_run.font.name = font_name
-        new_run.font.size = font_size
-        new_run.bold = bold
-        new_run.italic = italic
+        new_run.font.name = font_name; new_run.font.size = font_size; new_run.bold = bold; new_run.italic = italic
         if color: new_run.font.color.rgb = color
     return True
 
@@ -853,7 +849,6 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
             insert_bullets_in_placeholder(container, p, datos_trabajador["examenes_lista"])
             return True
         if "{{Recomendaciones médicas}}" in p.text:
-            # CORREGIDO: Clave unificada en español para evitar KeyError
             insert_recommendations_in_placeholder(container, p, datos_trabajador["recomendaciones_lista"])
             return True
         if "{{Observaciones}}".lower() in p.text.lower():
@@ -1019,7 +1014,13 @@ with col_izq:
             
             with st.expander("👁️ Ver / Ocultar PDF de Origen Subido", expanded=True):
                 base64_encoded_pdf = base64.b64encode(bytes_originales).decode('utf-8')
-                embedded_pdf_frame = f'<iframe src="data:application/pdf;base64,{base64_encoded_pdf}" width="100%" height="550" style="border:1px solid #1f2937; border-radius:8px;"></iframe>'
+                embedded_pdf_frame = f'''
+                    <embed src="data:application/pdf;base64,{base64_encoded_pdf}" 
+                           type="application/pdf" 
+                           width="100%" 
+                           height="550" 
+                           style="border:1px solid #1f2937; border-radius:8px;" />
+                '''
                 st.markdown(embedded_pdf_frame, unsafe_allow_html=True)
     else:
         archivo_seleccionado = None
@@ -1048,8 +1049,6 @@ with col_der:
         with col_p2: cargo_persona = st.text_input("Cargo:", value=doc_actual["cargo"])
         
         examenes_realizados = st.text_area("Exámenes Realizados:", value="\n".join(doc_actual["examenes_lista"]))
-        
-        # CORREGIDO: Clave unificada en español para evitar KeyError al compilar
         recom_medicas = st.text_area("Recomendaciones por Examen:", value="\n".join(doc_actual["recomendaciones_lista"]), height=130)
         
         programa_vigilancia = st.text_input("Programa de Vigilancia Epidemiológica (PVE):", value=doc_actual.get("vigilancia_programa", "NINGUNO"))
