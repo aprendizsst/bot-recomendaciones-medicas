@@ -15,7 +15,6 @@ import io
 import zipfile
 import tempfile
 import subprocess
-import base64
 
 # --- CONFIGURACIÓN DE PÁGINA AVANZADA ---
 st.set_page_config(
@@ -231,75 +230,6 @@ if "prev_colaborador" not in st.session_state:
 if "document_count" not in st.session_state:
     st.session_state.document_count = 0
 
-# --- PANTALLAS DE ACCESO ---
-if not st.session_state.logged_in:
-    st.markdown("<div class='login-box'>", unsafe_allow_html=True)
-    st.markdown("<h2>🔑 Acceso Seguro</h2>", unsafe_allow_html=True)
-    st.markdown("<p>Portal Interno de Medicina Preventiva - JER S.A.</p>", unsafe_allow_html=True)
-    
-    if not tiene_usuarios():
-        st.warning("🆕 Bienvenido. Configura tu cuenta inicial de Administrador.")
-        with st.form("form_registro_inicial"):
-            reg_nombre = st.text_input("Nombre Completo", key="init_admin_fullname")
-            reg_user = st.text_input("Nombre de Usuario (Login)", key="init_admin_username")
-            reg_pwd = st.text_input("Contraseña", type="password", key="init_admin_password")
-            submit_init = st.form_submit_button("Crear Administrador")
-            if submit_init:
-                if reg_nombre and reg_user and reg_pwd:
-                    if registrar_usuario(reg_user, reg_pwd, reg_nombre):
-                        st.success("¡Administrador creado con éxito!")
-                        st.rerun()
-                else:
-                    st.warning("Completa todos los campos.")
-    else:
-        opcion_acceso = st.radio("Elige una acción:", ["Iniciar Sesión", "Crear Nueva Cuenta", "Actualizar Contraseña"], horizontal=True, key="sistema_tabs_acceso")
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        if opcion_acceso == "Iniciar Sesión":
-            with st.form("form_inicio_sesion"):
-                log_user = st.text_input("Usuario", key="login_username_field")
-                log_pwd = st.text_input("Contraseña", type="password", key="login_password_field")
-                submit_login = st.form_submit_button("Ingresar al Sistema")
-                if submit_login:
-                    nombre_usuario = verificar_usuario(log_user, log_pwd)
-                    if nombre_usuario:
-                        st.session_state.logged_in = True
-                        st.session_state.username = nombre_usuario
-                        st.rerun()
-                    else:
-                        st.error("❌ Credenciales incorrectas.")
-                        
-        elif opcion_acceso == "Crear Nueva Cuenta":
-            with st.form("form_crear_cuenta"):
-                reg_nombre = st.text_input("Nombre Completo", key="register_fullname_field")
-                reg_user = st.text_input("Nombre de Usuario", key="register_username_field")
-                reg_pwd = st.text_input("Contraseña", type="password", key="register_password_field")
-                submit_reg = st.form_submit_button("Registrar Cuenta")
-                if submit_reg:
-                    if reg_nombre and reg_user and reg_pwd:
-                        if registrar_usuario(reg_user, reg_pwd, reg_nombre):
-                            st.success("🎉 Cuenta creada. Cambia a 'Iniciar Sesión'.")
-                        else:
-                            st.error("❌ El usuario ya existe.")
-                    else:
-                        st.warning("Completa todos los campos.")
-                        
-        elif opcion_acceso == "Actualizar Contraseña":
-            with st.form("form_update_password"):
-                upd_user = st.text_input("Usuario", key="update_username_field")
-                upd_old_pwd = st.text_input("Contraseña Actual", type="password", key="update_old_password_field")
-                upd_new_pwd = st.text_input("Nueva Contraseña", type="password", key="update_new_password_field")
-                submit_upd = st.form_submit_button("Cambiar Contraseña")
-                if submit_upd:
-                    if upd_user and upd_old_pwd and upd_new_pwd:
-                        if actualizar_contrasena(upd_user, upd_old_pwd, upd_new_pwd):
-                            st.success("✅ Contraseña actualizada con éxito.")
-                        else:
-                            st.error("❌ Error en los datos proporcionados.")
-                        
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.stop()
-
 # --- REVISOR Y CORRECTOR DE ORTOGRAFÍA SST ---
 def corregir_ortografia_sst(texto):
     if not texto: return ""
@@ -401,7 +331,7 @@ def analizar_pdf_inteligente(texto):
 
     lineas_raw = texto.split('\n')
 
-    # --- PRE-ESCÁNER CORREGIDO: SEPARACIÓN MEDIANTE ESPACIOS Y TUBERÍAS ---
+    # --- PRE-ESCÁNER DE GRILLAS COMPACTAS (BORDES HÍBRIDOS DE TABLA) ---
     for idx, line in enumerate(lineas_raw):
         l_up = line.upper().strip()
         
@@ -415,7 +345,6 @@ def analizar_pdf_inteligente(texto):
         if "FECHA Y CIUDAD DE REALIZACIÓN" in l_up or "FECHA Y CIUDAD DE REALIZACION" in l_up:
             if idx + 1 < len(lineas_raw):
                 l_val = lineas_raw[idx + 1].strip()
-                # CORRECCIÓN DE RECOLECCIÓN TEMPORAL: Detecta separadores de celdas con la barra vertical |
                 m_f_grid = re.search(r'\b(\d{1,2})\s*[\s\|/-]\s*(\d{1,2})\s*[\s\|/-]\s*(20\d{2})\b', l_val)
                 if m_f_grid:
                     try:
@@ -446,11 +375,6 @@ def analizar_pdf_inteligente(texto):
     if datos["fecha"] == datetime.date.today():
         m_fecha = re.search(r'(?:Fecha|Fecha Examen):\s*([^\n]+)', texto, re.IGNORECASE)
         if m_fecha: datos["fecha"] = intentar_parsear_fecha(m_fecha.group(1))
-        
-    m_comb = re.search(r'\b([A-Za-zñáéíóúÜÑ]+),\s*(\d{1,2}\s+de\s+[a-zA-Zíó]+\s+de\s+20\d{2})', texto, re.IGNORECASE)
-    if m_comb:
-        if not datos["lugar"] or datos["lugar"] == "Tunja": datos["lugar"] = m_comb.group(1).strip().title()
-        if datos["fecha"] == datetime.date.today(): datos["fecha"] = intentar_parsear_fecha(m_comb.group(2))
 
     if not datos["nombre"]:
         m_nom = re.search(r'(?:Nombre|Paciente|Colaborador|Trabajador):\s*([^\n]+)', texto, re.IGNORECASE)
@@ -507,7 +431,6 @@ def analizar_pdf_inteligente(texto):
             formato_grilla_detectado = True
             continue
             
-        # CORRECCIÓN DE EXTRACCIÓN: División por tuberías para no perder información en las columnas estructuradas
         if formato_grilla_detectado:
             if any(stop in linea_upper for stop in ["OTRAS OBSERVACIONES", "REMISIONES:", "ATENTAMENTE"]):
                 formato_grilla_detectado = False
@@ -526,7 +449,6 @@ def analizar_pdf_inteligente(texto):
                 recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "")
                 current_exam = None
 
-        # CORRECCIÓN CLAVE: El verificador corre por fuera del freno de mano para reactivar la lectura si aparece un examen nuevo
         matched_key = None
         for key in sorted(EXAMS_MAP.keys(), key=len, reverse=True):
             if key in linea_upper and linea_upper.find(key) < 15:
@@ -534,7 +456,7 @@ def analizar_pdf_inteligente(texto):
                 break
         
         if matched_key:
-            in_exams_section = True  # Reactivación forzada de bloque médico
+            in_exams_section = True
             current_exam = EXAMS_MAP[matched_key]
             if current_exam not in examenes_detectados:
                 examenes_detectados.append(current_exam)
@@ -578,7 +500,7 @@ def analizar_pdf_inteligente(texto):
                 if valid_parts:
                     recoms_por_examen.append(f"{exam}: {' - '.join(valid_parts)}")
 
-    # UNIFICACIÓN EXCLUSIVA DE RECOMENDACIONES EN LA VARIABLE DE CONTROL CORREGIDA
+    # ASIGNACIÓN DE CLAVE EN ESPAÑOL DEFINITIVA
     datos["examenes_lista"] = examenes_detectados
     datos["recomendaciones_lista"] = recoms_por_examen
     datos["vigilancia_lista"] = list(pve_detectados)
@@ -999,6 +921,7 @@ with col_izq:
         
         archivo_seleccionado = st.selectbox("🎯 Selecciona Colaborador:", list(st.session_state.documentos.keys()))
         
+        # --- SOLUCIÓN DE VISOR NATIVO: RENDERIZADO EN IMAGEN DE ALTA FIDELIDAD SIN BLOQUEOS ---
         if archivo_seleccionado and archivo_seleccionado in st.session_state.pdfs_raw_bytes:
             st.markdown("---")
             st.markdown("<h4 style='color:#60a5fa;'>📄 Soporte Visual de Comparación</h4>", unsafe_allow_html=True)
@@ -1013,15 +936,11 @@ with col_izq:
             )
             
             with st.expander("👁️ Ver / Ocultar PDF de Origen Subido", expanded=True):
-                base64_encoded_pdf = base64.b64encode(bytes_originales).decode('utf-8')
-                embedded_pdf_frame = f'''
-                    <embed src="data:application/pdf;base64,{base64_encoded_pdf}" 
-                           type="application/pdf" 
-                           width="100%" 
-                           height="550" 
-                           style="border:1px solid #1f2937; border-radius:8px;" />
-                '''
-                st.markdown(embedded_pdf_frame, unsafe_allow_html=True)
+                with pdfplumber.open(io.BytesIO(bytes_originales)) as preview_pdf:
+                    for i, page in enumerate(preview_pdf.pages):
+                        # Convertir vector a imagen PIL para visualización robusta en navegador
+                        img_pil = page.to_image(resolution=130).original
+                        st.image(img_pil, caption=f"Página {i+1} - {archivo_seleccionado}", use_container_width=True)
     else:
         archivo_seleccionado = None
         st.session_state.documentos = {}
