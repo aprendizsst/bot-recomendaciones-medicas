@@ -334,7 +334,7 @@ def es_vacio_o_estado(texto):
         "NO REGISTRA", "NA", "SIN REMISIONES", "SIN REMISIÓN", "VISUAL", "CARDIOVASCULAR", 
         "DME", "OSTEOMUSCULAR", "AUDITIVO", "RESPIRATORIO", "SVE", "SISTEMA", "VIGILANCIA",
         "SANO Y SIN ALTERACIONES", "NINGUNO", "NINGUNA", "NO PRESENTAS", "NO PRESENTA", 
-        "NO REGISTRA RECOMENDACIONES", "NORMALES", "NORMAL", "SIN ALTERACION"
+        "NO REGISTRA RECOMENDACIONES", "NORMALES", "NORMAL", "SIN ALTERACION", "NO APLICA"
     }
     
     if t_clean_norm in frases_estado:
@@ -363,25 +363,71 @@ def limpiar_ruido_columnas_final(texto):
         texto = re.sub(patron + r'\s*$', '', texto, flags=re.IGNORECASE)
     return texto.strip(" :-,_/")
 
-# --- EXTRACTOR INTELIGENTE MULTILÍNEA ---
+# --- EXTRACTOR INTELIGENTE DE FECHAS ---
+def intentar_parsear_fecha(fecha_str):
+    fecha_str = fecha_str.lower().strip(" :-,_/.()[]")
+    
+    # Formato escrito: 14 de julio de 2026
+    m_letras = re.search(r'(\d{1,2})\s+de\s+([a-zñáéíóúü]+)\s+de\s+(20\d{2})', fecha_str)
+    if m_letras:
+        dia = int(m_letras.group(1))
+        mes_str = m_letras.group(2)
+        anio = int(m_letras.group(3))
+        meses = {
+            "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+            "julio": 7, "agosto": 8, "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12
+        }
+        return datetime.date(anio, meses.get(mes_str, 1), dia)
+        
+    # Formato numérico YYYY-MM-DD
+    m_ymd = re.search(r'(20\d{2})[-/](\d{1,2})[-/](\d{1,2})', fecha_str)
+    if m_ymd:
+        return datetime.date(int(m_ymd.group(1)), int(m_ymd.group(2)), int(m_ymd.group(3)))
+        
+    # Formato numérico DD/MM/YYYY
+    m_dmy = re.search(r'(\d{1,2})[-/](\d{1,2})[-/](20\d{2})', fecha_str)
+    if m_dmy:
+        return datetime.date(int(m_dmy.group(3)), int(m_dmy.group(2)), int(m_dmy.group(1)))
+        
+    return datetime.date.today()
+
+# --- ANALIZADOR INTELIGENTE MULTILÍNEA GENERALIZADO ---
 def analizar_pdf_inteligente(texto):
     datos = {
         "nombre": "", "cargo": "", "tipo_examen": "PERIODICO",
         "examenes_lista": [], "recomendaciones_lista": [], "vigilancia_lista": [],
         "observaciones": "", "remisiones": "No", "consecutivo": "",
-        "vigilancia_programa": "NINGUNO"
+        "vigilancia_programa": "NINGUNO",
+        "lugar": "Tunja",
+        "fecha": datetime.date.today()
     }
     if not texto: return datos
 
+    # --- 1. MEJORA: EXTRACCIÓN DINÁMICA DE LUGAR Y FECHA ---
+    m_lugar = re.search(r'(?:Lugar|Ciudad|Municipio):\s*([A-Za-zñáéíóúÜÑ\s]+)', texto, re.IGNORECASE)
+    if m_lugar:
+        datos["lugar"] = re.sub(r'[:\-,_]+', '', m_lugar.group(1)).strip().title()
+        
+    m_fecha = re.search(r'(?:Fecha|Fecha Examen):\s*([^\n]+)', texto, re.IGNORECASE)
+    if m_fecha:
+        datos["fecha"] = intentar_parsear_fecha(m_fecha.group(1))
+        
+    # Captura combinada estándar tipo: "Tunja, 15 de julio de 2026"
+    m_comb = re.search(r'\b([A-Za-zñáéíóúÜÑ]+),\s*(\d{1,2}\s+de\s+[a-zA-Zíó]+\s+de\s+20\d{2})', texto, re.IGNORECASE)
+    if m_comb:
+        datos["lugar"] = m_comb.group(1).strip().title()
+        datos["fecha"] = intentar_parsear_fecha(m_comb.group(2))
+
+    # --- 2. EXTRACCIÓN DE IDENTIDAD Y TIPO ---
     m_nom = re.search(r'(?:Nombre|Paciente|Colaborador|Trabajador):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_nom: datos["nombre"] = limpiar_campo(m_nom.group(1))
 
     m_car = re.search(r'(?:Cargo|Ocupación|Ocupacion|Puesto):\s*([^\n]+)', texto, re.IGNORECASE)
     if m_car: datos["cargo"] = limpiar_campo(m_car.group(1))
 
-    for palabra in ["INGRESO", "PERIÓDICO", "PERIODICO", "EGRESO", "RETIRO", "CAMBIO DE CARGO", "POST-INCAPACIDAD", "POST INCAPACIDAD"]:
+    for palabra in ["INGRESO", "PERIÓDICO", "PERIODICO", "EGRESO", "RETIRO", "CAMBIO DE CARGO", "POST-INCAPACIDAD", "POST INCAPACIDAD", "CONTROL PERIÓDICO"]:
         if palabra in texto.upper():
-            datos["tipo_examen"] = "PERIODICO" if "PERIOD" in palabra else palabra
+            datos["tipo_examen"] = "PERIODICO" if "PERIOD" in palabra or "CONTROL" in palabra else palabra
             break
 
     EXAMS_MAP = {
@@ -391,8 +437,7 @@ def analizar_pdf_inteligente(texto):
         "VISIOMETRIA": "Visiometría", "VISIOMETRÍA": "Visiometría",
         "EXAMEN MEDICO OCUPACIONAL": "Examen Clínico Ocupacional",
         "EXAMEN MEDICO": "Examen Clínico Ocupacional",
-        "PERFIL LIPIDICO": "Perfil Lipídico", "PERFIL LIPÍDICO": "Perfil Lipídico",
-        "GLICEMIA": "Glicemia",
+        "EXAMEN OCUPACIONAL ENFASIS OSTEOMUSCULAR": "Énfasis Osteomuscular",
         "ENFASIS OSTEOMUSCULAR": "Énfasis Osteomuscular", "ÉNFASIS OSTEOMUSCULAR": "Énfasis Osteomuscular",
         "ELECTROCARDIOGRAMA DE RITMO": "Electrocardiograma", "ELECTROCARDIOGRAMA": "Electrocardiograma", 
         "FROTIS": "Frotis",
@@ -406,18 +451,49 @@ def analizar_pdf_inteligente(texto):
     examenes_detectados = []
     recoms_raw_dict = {}
     current_exam = None
-    exam_text_accumulator = ""
     in_exams_section = True
+    
+    # Flags para el nuevo formato en tabla/grilla
+    formato_grilla_detectado = False
+    recoms_grilla_acumuladas = []
 
     lineas = texto.split('\n')
-    for linea in lineas:
+    for idx_l, linea in enumerate(lineas):
         linea_limpia = limpiar_linea_ruido_lateral(linea)
         linea_upper = linea_limpia.upper().strip()
         
+        # --- MEJORA: SOPORTE NUEVO FORMATO DE EXÁMENES PRACTICADOS ---
+        if "EL CONCEPTO DE APTITUD SE DEFINIÓ A PARTIR DE LOS SIGUIENTES EXÁMENES PRACTICADOS" in linea_upper:
+            for offset in range(1, 4):
+                if idx_l + offset < len(lineas):
+                    l_sig = lineas[idx_l + offset].upper()
+                    for k_ex, v_ex in EXAMS_MAP.items():
+                        if k_ex in l_sig and v_ex not in examenes_detectados:
+                            examenes_detectados.append(v_ex)
+            continue
+            
+        # --- MEJORA: DETECCION DE RECOMENDACIONES MULTICOLUMNA ---
+        if any(h in linea_upper for h in ["RECOMENDACIONES MÉDICAS", "RECOMENDACIONES OCUPACIONALES", "HABITOS Y ESTILO DE VIDA SALUDABLES"]):
+            formato_grilla_detectado = True
+            continue
+            
+        if formato_grilla_detectado:
+            if any(stop in linea_upper for stop in ["OTRAS OBSERVACIONES", "REMISIONES:", "ATENTAMENTE"]):
+                formato_grilla_detectado = False
+            else:
+                columnas = [col.strip() for col in re.split(r'\s{2,}', linea_limpia) if col.strip()]
+                for col in columnas:
+                    if not es_vacio_o_estado(col):
+                        rec_fmt = a_caso_oracion(col)
+                        if rec_fmt and rec_fmt not in recoms_grilla_acumuladas:
+                            recoms_grilla_acumuladas.append(rec_fmt)
+                continue
+
+        # --- ANÁLISIS DE FORMATO TRADICIONAL ---
         if any(stop in linea_upper for stop in ["OBSERVACIONES:", "OBSERVACION:", "REMISIONES:", "SISTEMA DE VIGILANCIA"]):
             in_exams_section = False
             if current_exam:
-                recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "") + " " + exam_text_accumulator
+                recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "")
                 current_exam = None
                 
         if in_exams_section:
@@ -428,66 +504,74 @@ def analizar_pdf_inteligente(texto):
                     break
             
             if matched_key:
-                if current_exam:
-                    recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "") + " " + exam_text_accumulator
-                
                 current_exam = EXAMS_MAP[matched_key]
                 if current_exam not in examenes_detectados:
                     examenes_detectados.append(current_exam)
                 
                 idx = linea_upper.find(matched_key) + len(matched_key)
-                exam_text_accumulator = linea_limpia[idx:].strip(" :-,_/")
+                recoms_raw_dict[current_exam] = linea_limpia[idx:].strip(" :-,_/")
             else:
                 if current_exam and linea_limpia.strip():
-                    exam_text_accumulator += " " + linea_limpia.strip()
-
-    if current_exam:
-        recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "") + " " + exam_text_accumulator
+                    if not (linea_limpia.isupper() and len(linea_limpia) > 10):
+                        recoms_raw_dict[current_exam] = recoms_raw_dict.get(current_exam, "") + " " + linea_limpia.strip()
 
     recoms_por_examen = []
     pve_detectados = set()
 
-    for exam in examenes_detectados:
-        rec_part = recoms_raw_dict.get(exam, "").strip()
-        rec_part = re.sub(r'\s+', ' ', rec_part)
-        rec_part = limpiar_ruido_columnas_final(rec_part)
-        
-        if not es_vacio_o_estado(rec_part):
-            parts = re.split(r'//|;|\b\d+\.|\b\d+\-', rec_part)
+    # Consolidación final según formato detectado
+    if recoms_grilla_acumuladas:
+        for rec in recoms_grilla_acumuladas:
+            recoms_por_examen.append(rec)
+            rec_up = rec.upper()
+            if any(re.search(patron, rec_up) for patron in [r'\bAUDITIV', r'\bRUIDO', r'\bOIDO', r'\bOÍDO', r'\bAUDIO']): pve_detectados.add("Conservación Auditiva")
+            if any(re.search(patron, rec_up) for patron in [r'\bPOSTURAL', r'\bLUMBAR', r'\bOSTEOMUSCULAR', r'\bERGONOMIC', r'\bESPALDA', r'\bCARGA']): pve_detectados.add("Prevención Osteomuscular (DME)")
+            if any(re.search(patron, rec_up) for patron in [r'\bVISUAL', r'\bGAFAS', r'\bVISION', r'\bVISIÓN', r'\bLENTE', r'\bOPTOMETR', r'\bRX\b']): pve_detectados.add("Conservación Visual")
+            if any(re.search(patron, rec_up) for patron in [r'\bRESPIRATORI', r'\bESPIROMETR', r'\bPOLVO', r'\bHUMO']): pve_detectados.add("Conservación Respiratoria")
+    else:
+        for exam in examenes_detectados:
+            rec_part = recoms_raw_dict.get(exam, "").strip()
+            rec_part = re.sub(r'\s+', ' ', rec_part)
+            rec_part = limpiar_ruido_columnas_final(rec_part)
             
-            valid_parts = []
-            for p in parts:
-                p_clean = p.strip(" .-_/()[]")
-                if not es_vacio_o_estado(p_clean):
-                    valid_parts.append(a_caso_oracion(p_clean))
-                    
-                    p_upper = p_clean.upper()
-                    if any(re.search(patron, p_upper) for patron in [r'\bAUDITIV', r'\bRUIDO', r'\bOIDO', r'\bOÍDO', r'\bAUDIO']):
-                        pve_detectados.add("Conservación Auditiva")
-                    elif any(re.search(patron, p_upper) for patron in [r'\bPOSTURAL', r'\bLUMBAR', r'\bOSTEOMUSCULAR', r'\bERGONOMIC', r'\bESPALDA', r'\bCARGA']):
-                        pve_detectados.add("Prevención Osteomuscular (DME)")
-                    elif any(re.search(patron, p_upper) for patron in [r'\bVISUAL', r'\bGAFAS', r'\bVISION', r'\bVISIÓN', r'\bLENTE', r'\bOPTOMETR', r'\bRX\b']):
-                        pve_detectados.add("Conservación Visual")
-                    elif any(re.search(patron, p_upper) for patron in [r'\bRESPIRATORI', r'\bESPIROMETR', r'\bPOLVO', r'\bHUMO']):
-                        pve_detectados.add("Conservación Respiratoria")
-            
-            if valid_parts:
-                recoms_por_examen.append(f"{exam}: {' - '.join(valid_parts)}")
+            if not es_vacio_o_estado(rec_part):
+                parts = re.split(r'//|;|\b\d+\.|\b\d+\-', rec_part)
+                valid_parts = []
+                for p in parts:
+                    p_clean = p.strip(" .-_/()[]")
+                    if not es_vacio_o_estado(p_clean):
+                        valid_parts.append(a_caso_oracion(p_clean))
+                        p_upper = p_clean.upper()
+                        if any(re.search(patron, p_upper) for patron in [r'\bAUDITIV', r'\bRUIDO', r'\bOIDO', r'\bOÍDO', r'\bAUDIO']): pve_detectados.add("Conservación Auditiva")
+                        if any(re.search(patron, p_upper) for patron in [r'\bPOSTURAL', r'\bLUMBAR', r'\bOSTEOMUSCULAR', r'\bERGONOMIC', r'\bESPALDA', r'\bCARGA']): pve_detectados.add("Prevención Osteomuscular (DME)")
+                        if any(re.search(patron, p_upper) for patron in [r'\bVISUAL', r'\bGAFAS', r'\bVISION', r'\bVISIÓN', r'\bLENTE', r'\bOPTOMETR', r'\bRX\b']): pve_detectados.add("Conservación Visual")
+                        if any(re.search(patron, p_upper) for patron in [r'\bRESPIRATORI', r'\bESPIROMETR', r'\bPOLVO', r'\bHUMO']): pve_detectados.add("Conservación Respiratoria")
+                
+                if valid_parts:
+                    recoms_por_examen.append(f"{exam}: {' - '.join(valid_parts)}")
 
     datos["examenes_lista"] = examenes_detectados
     datos["recomendaciones_lista"] = recoms_por_examen
     datos["vigilancia_lista"] = list(pve_detectados)
 
-    # EXTRAER PROGRAMA DE VIGILANCIA EN SU PROPIO CAMPO
-    prog_vig = ""
-    patron_pve = r'(?:Ingresar al programa de vigilancia epidemiol[oó]gica o programa de prevenci[oó]n y promoci[oó]n)\s*\n?\s*([^\n]+)'
-    m_pve = re.search(patron_pve, texto, re.IGNORECASE)
-    if m_pve:
-        prog_vig = m_pve.group(1).strip()
-        prog_vig = re.sub(r'\b(ppyp|sve|pyp)\b', '', prog_vig, flags=re.IGNORECASE)
-        prog_vig = prog_vig.strip(" :-,_/.()[]").upper()
-    
-    datos["vigilancia_programa"] = prog_vig if prog_vig else "NINGUNO"
+    # --- MEJORA: EXTRACCIÓN MULTILÍNEA SEGURA PARA MÚLTIPLES PROGRAMAS SVE ---
+    programas_encontrados = []
+    patron_bloque_pve = r'(?:Ingresar al programa de vigilancia epidemiol[oó]gica o programa de prevenci[oó]n y promoci[oó]n)([\s\S]*?)(?:Remisiones:|Observaciones:|Otras Observaciones|Atentamente:|$)'
+    m_bloque = re.search(patron_bloque_pve, texto, re.IGNORECASE)
+    if m_bloque:
+        lineas_bloque = m_bloque.group(1).split('\n')
+        for lb in lineas_bloque:
+            lb_clean = re.sub(r'\b(ppyp|sve|pyp)\b', '', lb, flags=re.IGNORECASE)
+            lb_clean = lb_clean.strip(" :-,_/.()[]")
+            if lb_clean and not es_vacio_o_estado(lb_clean):
+                sub_elementos = [c.strip().upper() for c in re.split(r',|\s{2,}', lb_clean) if c.strip()]
+                for elem in sub_elementos:
+                    if elem not in programas_encontrados and len(elem) > 2:
+                        programas_encontrados.append(elem)
+                        
+    if not programas_encontrados and pve_detectados:
+        programas_encontrados = [p.upper() for p in pve_detectados]
+        
+    datos["vigilancia_programa"] = ", ".join(programas_encontrados) if programas_encontrados else "NINGUNO"
 
     def extraer_seccion_limpia(texto_completo, palabras_inicio, palabras_fin):
         seccion = []
@@ -508,11 +592,20 @@ def analizar_pdf_inteligente(texto):
                 seccion.append(l_limpia)
         return "\n".join([s for s in seccion if s]).strip()
 
-    datos["observaciones"] = a_caso_oracion(extraer_seccion_limpia(
-        texto, 
-        ["OBSERVACIONES:"], 
-        ["RECOMENDACIONES", "REMISIONES", "INGRESAR AL PROGRAMA", "PROGRAMA DE VIGILANCIA"]
-    ))
+    # --- MEJORA: EXTRAER OBSERVACIONES DESDE FORMATO DE NUEVA IPS ---
+    obs_fmt_nuevo = ""
+    m_obs_nuevo = re.search(r'OTRAS OBSERVACIONES Y RECOMENDACIONES\s*\n\s*([^\n]+)', texto, re.IGNORECASE)
+    if m_obs_nuevo:
+        obs_fmt_nuevo = m_obs_nuevo.group(1).strip()
+        
+    if obs_fmt_nuevo and not es_vacio_o_estado(obs_fmt_nuevo):
+        datos["observaciones"] = a_caso_oracion(obs_fmt_nuevo)
+    else:
+        datos["observaciones"] = a_caso_oracion(extraer_seccion_limpia(
+            texto, 
+            ["OBSERVACIONES:"], 
+            ["RECOMENDACIONES", "REMISIONES", "INGRESAR AL PROGRAMA", "PROGRAMA DE VIGILANCIA"]
+        ))
     
     rem_raw = extraer_seccion_limpia(texto, ["INFORMACION DE REMISIONES", "INFORMACIÓN DE REMISIONES"], ["CONSENTIMIENTO", "AUTORIZO"])
     datos["remisiones"] = "No" if es_vacio_o_negativo(rem_raw) else a_caso_oracion(rem_raw)
@@ -546,7 +639,6 @@ def aplicar_negrita_dinamica_cuerpo(paragraph, tipo_examen):
                 
     paragraph.add_run(")")
 
-# --- MOTOR DE REEMPLAZO QUE PRESERVA FUENTES CORPORATIVAS AL 100% ---
 def replace_placeholder_in_paragraph_runs(paragraph, placeholder, value):
     if placeholder not in paragraph.text:
         return False
@@ -585,7 +677,6 @@ def replace_placeholder_in_paragraph_runs(paragraph, placeholder, value):
             new_run.font.color.rgb = color
     return True
 
-# --- INSERCIÓN DE LISTAS CON FORMATO DEFENSIVO DE UNA SOLA HOJA ---
 def insert_bullets_in_placeholder(parent_container, paragraph, items_list):
     if not paragraph.runs:
         font_name = "Arial"
@@ -600,7 +691,7 @@ def insert_bullets_in_placeholder(parent_container, paragraph, items_list):
         color = first_run.font.color.rgb if first_run.font.color else None
 
     paragraph.text = ""
-    paragraph.paragraph_format.space_after = Pt(2)   # AJUSTE: Minimizar espacio vertical
+    paragraph.paragraph_format.space_after = Pt(2)
     paragraph.paragraph_format.space_before = Pt(0)
     
     if not items_list:
@@ -625,7 +716,7 @@ def insert_bullets_in_placeholder(parent_container, paragraph, items_list):
         new_para = Paragraph(new_p_element, parent_container)
         new_para.paragraph_format.alignment = paragraph.paragraph_format.alignment
         new_para.paragraph_format.line_spacing = paragraph.paragraph_format.line_spacing
-        new_para.paragraph_format.space_after = Pt(2)    # AJUSTE: Mantener lista unida sin desbordes
+        new_para.paragraph_format.space_after = Pt(2)
         new_para.paragraph_format.space_before = Pt(0)
         new_para.paragraph_format.left_indent = paragraph.paragraph_format.left_indent or Inches(0.25)
         
@@ -679,7 +770,7 @@ def insert_recommendations_in_placeholder(parent_container, paragraph, recom_lis
         new_para = Paragraph(new_p_element, parent_container)
         new_para.paragraph_format.alignment = paragraph.paragraph_format.alignment
         new_para.paragraph_format.line_spacing = paragraph.paragraph_format.line_spacing
-        new_para.paragraph_format.space_after = Pt(2)    # AJUSTE: Evitar saltos de página
+        new_para.paragraph_format.space_after = Pt(2)
         new_para.paragraph_format.space_before = Pt(0)
         new_para.paragraph_format.left_indent = Inches(0.25)
         
@@ -704,7 +795,7 @@ def replace_label_placeholder(paragraph, label_text, placeholder, value):
         color = None
         
     paragraph.text = ""
-    paragraph.paragraph_format.space_after = Pt(3)   # AJUSTE: Compactación vertical de campos inferiores
+    paragraph.paragraph_format.space_after = Pt(3)
     paragraph.paragraph_format.space_before = Pt(0)
     
     run_lbl = paragraph.add_run(label_text)
@@ -811,7 +902,7 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
     doc_word.save(b_io)
     return b_io.getvalue(), consecutivo_final
 
-# --- COMPILADOR DE WORD A PDF DE ALTA FIDELIDAD ---
+# --- COMPILADOR DE WORD A PDF ---
 def convertir_docx_a_pdf(docx_bytes):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as temp_docx:
         temp_docx.write(docx_bytes)
@@ -864,7 +955,7 @@ def generar_html_vista(datos, consecutivo_num, lugar, fecha):
         <p><strong>EXÁMENES REALIZADOS:</strong></p>
         <ul>{"".join([f"<li>{ex}</li>" for ex in datos['examenes_lista']])}</ul>
         <p><strong>Recomendaciones:</strong></p>
-        <ul>{"".join([f"<li>{rec}</li>" for rec in datos['recomendaciones_lista']])}</ul>
+        <ul>{"".join([f"<li>{rec}</li>" for rec in datos['recommendaciones_lista']])}</ul>
         <p><strong>Programa de Vigilancia:</strong> {datos.get('vigilancia_programa', 'NINGUNO')}</p>
         <p><strong>observaciones:</strong> {datos['observaciones']}</p>
         <p><strong>remisiones:</strong> {datos['remisiones']}</p><br>
@@ -946,8 +1037,9 @@ with col_der:
         doc_actual = st.session_state.documentos[archivo_seleccionado]
         
         col_f1, col_f2 = st.columns(2)
-        with col_f1: lugar = st.text_input("Lugar:", value="Tunja")
-        with col_f2: fecha = st.date_input("Fecha:", value=datetime.date.today())
+        # --- MEJORA: LOS VALORES POR DEFECTO AHORA VIENEN ASIGNADOS DESDE LA EXTRACCIÓN AUTOMÁTICA DEL PDF ---
+        with col_f1: lugar = st.text_input("Lugar:", value=doc_actual.get("lugar", "Tunja"))
+        with col_f2: fecha = st.date_input("Fecha:", value=doc_actual.get("fecha", datetime.date.today()))
         
         tipo_examen = st.text_input("Tipo de Examen:", value=doc_actual["tipo_examen"].upper())
         
@@ -968,7 +1060,8 @@ with col_der:
             "examenes_lista": [l.strip() for l in examenes_realizados.split('\n') if l.strip()],
             "recomendaciones_lista": [l.strip() for l in recom_medicas.split('\n') if l.strip()],
             "observaciones": observaciones.strip(), "remisiones": remisiones.strip(),
-            "vigilancia_programa": programa_vigilancia.strip()
+            "vigilancia_programa": programa_vigilancia.strip(),
+            "lugar": lugar, "fecha": fecha
         }
         
         for clave, valor in valores_actualizados.items():
