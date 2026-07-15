@@ -15,6 +15,7 @@ import io
 import zipfile
 import tempfile
 import subprocess
+import base64
 
 # --- CONFIGURACIÓN DE PÁGINA AVANZADA ---
 st.set_page_config(
@@ -230,6 +231,75 @@ if "prev_colaborador" not in st.session_state:
 if "document_count" not in st.session_state:
     st.session_state.document_count = 0
 
+# --- PANTALLAS DE ACCESO ---
+if not st.session_state.logged_in:
+    st.markdown("<div class='login-box'>", unsafe_allow_html=True)
+    st.markdown("<h2>🔑 Acceso Seguro</h2>", unsafe_allow_html=True)
+    st.markdown("<p>Portal Interno de Medicina Preventiva - JER S.A.</p>", unsafe_allow_html=True)
+    
+    if not tiene_usuarios():
+        st.warning("🆕 Bienvenido. Configura tu cuenta inicial de Administrador.")
+        with st.form("form_registro_inicial"):
+            reg_nombre = st.text_input("Nombre Completo", key="init_admin_fullname")
+            reg_user = st.text_input("Nombre de Usuario (Login)", key="init_admin_username")
+            reg_pwd = st.text_input("Contraseña", type="password", key="init_admin_password")
+            submit_init = st.form_submit_button("Crear Administrador")
+            if submit_init:
+                if reg_nombre and reg_user and reg_pwd:
+                    if registrar_usuario(reg_user, reg_pwd, reg_nombre):
+                        st.success("¡Administrador creado con éxito!")
+                        st.rerun()
+                else:
+                    st.warning("Completa todos los campos.")
+    else:
+        opcion_acceso = st.radio("Elige una acción:", ["Iniciar Sesión", "Crear Nueva Cuenta", "Actualizar Contraseña"], horizontal=True, key="sistema_tabs_acceso")
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        if opcion_acceso == "Iniciar Sesión":
+            with st.form("form_inicio_sesion"):
+                log_user = st.text_input("Usuario", key="login_username_field")
+                log_pwd = st.text_input("Contraseña", type="password", key="login_password_field")
+                submit_login = st.form_submit_button("Ingresar al Sistema")
+                if submit_login:
+                    nombre_usuario = verificar_usuario(log_user, log_pwd)
+                    if nombre_usuario:
+                        st.session_state.logged_in = True
+                        st.session_state.username = nombre_usuario
+                        st.rerun()
+                    else:
+                        st.error("❌ Credenciales incorrectas.")
+                        
+        elif opcion_acceso == "Crear Nueva Cuenta":
+            with st.form("form_crear_cuenta"):
+                reg_nombre = st.text_input("Nombre Completo", key="register_fullname_field")
+                reg_user = st.text_input("Nombre de Usuario", key="register_username_field")
+                reg_pwd = st.text_input("Contraseña", type="password", key="register_password_field")
+                submit_reg = st.form_submit_button("Registrar Cuenta")
+                if submit_reg:
+                    if reg_nombre and reg_user and reg_pwd:
+                        if registrar_usuario(reg_user, reg_pwd, reg_nombre):
+                            st.success("🎉 Cuenta creada. Cambia a 'Iniciar Sesión'.")
+                        else:
+                            st.error("❌ El usuario ya existe.")
+                    else:
+                        st.warning("Completa todos los campos.")
+                        
+        elif opcion_acceso == "Actualizar Contraseña":
+            with st.form("form_update_password"):
+                upd_user = st.text_input("Usuario", key="update_username_field")
+                upd_old_pwd = st.text_input("Contraseña Actual", type="password", key="update_old_password_field")
+                upd_new_pwd = st.text_input("Nueva Contraseña", type="password", key="update_new_password_field")
+                submit_upd = st.form_submit_button("Cambiar Contraseña")
+                if submit_upd:
+                    if upd_user and upd_old_pwd and upd_new_pwd:
+                        if actualizar_contrasena(upd_user, upd_old_pwd, upd_new_pwd):
+                            st.success("✅ Contraseña actualizada con éxito.")
+                        else:
+                            st.error("❌ Error en los datos proporcionados.")
+                        
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
+
 # --- REVISOR Y CORRECTOR DE ORTOGRAFÍA SST ---
 def corregir_ortografia_sst(texto):
     if not texto: return ""
@@ -256,6 +326,7 @@ def es_vacio_o_negativo(texto):
     if not texto: return True
     return texto.strip().lower().strip(" .-_/ '\"") in ["no", "ninguna", "ninguno", "no registra", "sin remisiones", "normal", "n/a", "sin remisión"]
 
+# --- FILTRADO INTELIGENTE DE RUIDO DE ESTADOS CLÍNICOS ---
 def es_vacio_o_estado(texto):
     if not texto: return True
     t_clean = texto.strip().upper()
@@ -267,7 +338,9 @@ def es_vacio_o_estado(texto):
         "NO REGISTRA", "NA", "SIN REMISIONES", "SIN REMISIÓN", "VISUAL", "CARDIOVASCULAR", 
         "DME", "OSTEOMUSCULAR", "AUDITIVO", "RESPIRATORIO", "SVE", "SISTEMA", "VIGILANCIA",
         "SANO Y SIN ALTERACIONES", "NINGUNO", "NINGUNA", "NO PRESENTAS", "NO PRESENTA", 
-        "NO REGISTRA RECOMENDACIONES", "NORMALES", "NORMAL", "SIN ALTERACION", "NO APLICA"
+        "NO REGISTRA RECOMENDACIONES", "NORMALES", "NORMAL", "SIN ALTERACION", "NO APLICA",
+        "RECOMENDACIONES MÉDICAS", "RECOMENDACIONES OCUPACIONALES", "HABITOS Y ESTILO DE VIDA SALUDABLES",
+        "HABITOS SALUDABLES", "OTRAS OBSERVACIONES Y RECOMENDACIONES", "RECOMENDACIONES MEDICAS"
     }
     
     if t_clean_norm in frases_estado:
@@ -331,7 +404,7 @@ def analizar_pdf_inteligente(texto):
 
     lineas_raw = texto.split('\n')
 
-    # --- PRE-ESCÁNER DE GRILLAS COMPACTAS (BORDES HÍBRIDOS DE TABLA) ---
+    # --- PRE-ESCÁNER DE GRILLAS COMPACTAS (IDENTIDAD Y UBICACIÓN) ---
     for idx, line in enumerate(lineas_raw):
         l_up = line.upper().strip()
         
@@ -367,22 +440,27 @@ def analizar_pdf_inteligente(texto):
                 if cols_c and not any(h in cols_c[0].upper() for h in ["EPS", "ARP", "AFP", "DATOS", "CARGO"]):
                     datos["cargo"] = corregir_ortografia_sst(cols_c[0].strip()).title()
 
-    # --- FALLBACKS LINEALES ---
+    # --- MEJORA: ESCÁNER GLOBAL ROBUSTO DE FECHA Y MUNICIPIO (MÚLTIPLES IPS) ---
+    for line in lineas_raw:
+        m_f_glob = re.search(r'\b(\d{1,2})\s*[\s\|/-]\s*(\d{1,2})\s*[\s\|/-]\s*(20\d{2})\b', line)
+        if m_f_glob:
+            try:
+                datos["fecha"] = datetime.date(int(m_f_glob.group(3)), int(m_f_glob.group(2)), int(m_f_glob.group(1)))
+                resto = line[m_f_glob.end():].strip(" |/-,_.")
+                resto_clean = re.sub(r'\(.*?\)', '', resto).strip(" |/-,_.")
+                resto_clean = re.sub(r'\b(CIUDAD|MUNICIPIO|DÍA|MES|AÑO|DIA|ANIO)\b', '', resto_clean, flags=re.IGNORECASE).strip(" |/-,_.")
+                if resto_clean and len(resto_clean) > 2 and not es_vacio_o_estado(resto_clean):
+                    datos["lugar"] = resto_clean.title()
+            except: pass
+
     if not datos["lugar"] or datos["lugar"] == "Tunja":
         m_lugar = re.search(r'(?:Lugar|Ciudad|Municipio):\s*([A-Za-zñáéíóúÜÑ\s]+)', texto, re.IGNORECASE)
         if m_lugar: datos["lugar"] = re.sub(r'[:\-,_]+', '', m_lugar.group(1)).strip().title()
-        
-    if datos["fecha"] == datetime.date.today():
-        m_fecha = re.search(r'(?:Fecha|Fecha Examen):\s*([^\n]+)', texto, re.IGNORECASE)
-        if m_fecha: datos["fecha"] = intentar_parsear_fecha(m_fecha.group(1))
 
-    if not datos["nombre"]:
-        m_nom = re.search(r'(?:Nombre|Paciente|Colaborador|Trabajador):\s*([^\n]+)', texto, re.IGNORECASE)
-        if m_nom: datos["nombre"] = limpiar_campo(m_nom.group(1))
-
-    if not datos["cargo"]:
-        m_car = re.search(r'(?:Cargo|Ocupación|Ocupacion|Puesto):\s*([^\n]+)', texto, re.IGNORECASE)
-        if m_car: datos["cargo"] = limpiar_campo(m_car.group(1))
+    m_comb = re.search(r'\b([A-Za-zñáéíóúÜÑ]+),\s*(\d{1,2}\s+de\s+[a-zA-Zíó]+\s+de\s+20\d{2})', texto, re.IGNORECASE)
+    if m_comb:
+        if not datos["lugar"] or datos["lugar"] == "Tunja": datos["lugar"] = m_comb.group(1).strip().title()
+        if datos["fecha"] == datetime.date.today(): datos["fecha"] = intentar_parsear_fecha(m_comb.group(2))
 
     for palabra in ["INGRESO", "PERIÓDICO", "PERIODICO", "EGRESO", "RETIRO", "CAMBIO DE CARGO", "POST-INCAPACIDAD", "POST INCAPACIDAD", "CONTROL PERIÓDICO"]:
         if palabra in texto.upper():
@@ -500,28 +578,41 @@ def analizar_pdf_inteligente(texto):
                 if valid_parts:
                     recoms_por_examen.append(f"{exam}: {' - '.join(valid_parts)}")
 
-    # ASIGNACIÓN DE CLAVE EN ESPAÑOL DEFINITIVA
     datos["examenes_lista"] = examenes_detectados
     datos["recomendaciones_lista"] = recoms_por_examen
     datos["vigilancia_lista"] = list(pve_detectados)
 
+    # --- MEJORA CLAVE: MAPEO TOTAL DE PROGRAMAS SVE SIN FILTRADOS DE ESTADO ---
     programas_encontrados = []
-    patron_bloque_pve = r'(?:Ingresar al programa de vigilancia epidemiol[oó]gica o programa de prevenci[oó]n y promoci[oó]n)([\s\S]*?)(?:Remisiones:|Observaciones:|Otras Observaciones|Atentamente:|$)'
-    m_bloque = re.search(patron_bloque_pve, texto, re.IGNORECASE)
+    sve_clinical_keywords = {
+        "VISUAL": "Conservación Visual", "AUDITIV": "Conservación Auditiva", 
+        "RUIDO": "Conservación Auditiva", "OIDO": "Conservación Auditiva", "OÍDO": "Conservación Auditiva",
+        "AUDIO": "Conservación Auditiva", "OSTEOMUSCULAR": "Prevención Osteomuscular (DME)",
+        "POSTURAL": "Prevención Osteomuscular (DME)", "LUMBAR": "Prevención Osteomuscular (DME)",
+        "ERGONOMIC": "Prevención Osteomuscular (DME)", "ESPALDA": "Prevención Osteomuscular (DME)",
+        "DME": "Prevención Osteomuscular (DME)", "RESPIRATORI": "Conservación Respiratoria",
+        "ESPIROMETR": "Conservación Respiratoria", "POLVO": "Conservación Respiratoria",
+        "HUMO": "Conservación Respiratoria", "CARDIOVASCULAR": "Riesgo Cardiovascular"
+    }
+
+    m_bloque = re.search(r'(?:Ingresar al programa de vigilancia epidemiol[oó]gica|PROGRAMA DE VIGILANCIA)([\s\S]*?)(?:Remisiones:|Observaciones:|Otras Observaciones|Atentamente:|$)', texto, re.IGNORECASE)
     if m_bloque:
-        lineas_bloque = m_bloque.group(1).split('\n')
-        for lb in lineas_bloque:
-            lb_clean = re.sub(r'\b(ppyp|sve|pyp)\b', '', lb, flags=re.IGNORECASE)
-            lb_clean = lb_clean.strip(" :-,_/.()[]")
-            if lb_clean and not es_vacio_o_estado(lb_clean):
-                sub_elementos = [c.strip().upper() for c in re.split(r',|\s{2,}', lb_clean) if c.strip()]
-                for elem in sub_elementos:
-                    if elem not in programas_encontrados and len(elem) > 2:
-                        programas_encontrados.append(elem)
-                        
-    if not programas_encontrados and pve_detectados:
-        programas_encontrados = [p.upper() for p in pve_detectados]
-        
+        texto_bloque = m_bloque.group(1).upper()
+        for kw, prog_name in sve_clinical_keywords.items():
+            if kw in texto_bloque and prog_name not in programas_encontrados:
+                programas_encontrados.append(prog_name)
+
+    for line in lineas_raw:
+        l_up = line.upper()
+        if any(h in l_up for h in ["INGRESAR", "SISTEMA DE VIGILANCIA", "VIGILANCIA EPIDEMIOL"]):
+            for kw, prog_name in sve_clinical_keywords.items():
+                if kw in l_up and prog_name not in programas_encontrados:
+                    programas_encontrados.append(prog_name)
+
+    for pve_bandera in datos["vigilancia_lista"]:
+        if pve_bandera not in programas_encontrados:
+            programas_encontrados.append(pve_bandera)
+
     datos["vigilancia_programa"] = ", ".join(programas_encontrados) if programas_encontrados else "NINGUNO"
 
     def extraer_seccion_limpia(texto_completo, palabras_inicio, palabras_fin):
@@ -545,16 +636,13 @@ def analizar_pdf_inteligente(texto):
 
     obs_fmt_nuevo = ""
     m_obs_nuevo = re.search(r'OTRAS OBSERVACIONES Y RECOMENDACIONES\s*\n\s*([^\n]+)', texto, re.IGNORECASE)
-    if m_obs_nuevo:
-        obs_fmt_nuevo = m_obs_nuevo.group(1).strip()
+    if m_obs_nuevo: obs_fmt_nuevo = m_obs_nuevo.group(1).strip()
         
     if obs_fmt_nuevo and not es_vacio_o_estado(obs_fmt_nuevo):
         datos["observaciones"] = a_caso_oracion(obs_fmt_nuevo)
     else:
         datos["observaciones"] = a_caso_oracion(extraer_seccion_limpia(
-            texto, 
-            ["OBSERVACIONES:"], 
-            ["RECOMENDACIONES", "REMISIONES", "INGRESAR AL PROGRAMA", "PROGRAMA DE VIGILANCIA"]
+            texto, ["OBSERVACIONES:"], ["RECOMENDACIONES", "REMISIONES", "INGRESAR AL PROGRAMA", "PROGRAMA DE VIGILANCIA"]
         ))
     
     rem_raw = extraer_seccion_limpia(texto, ["INFORMACION DE REMISIONES", "INFORMACIÓN DE REMISIONES"], ["CONSENTIMIENTO", "AUTORIZO"])
@@ -590,9 +678,7 @@ def aplicar_negrita_dinamica_cuerpo(paragraph, tipo_examen):
     paragraph.add_run(")")
 
 def replace_placeholder_in_paragraph_runs(paragraph, placeholder, value):
-    if placeholder not in paragraph.text:
-        return False
-    
+    if placeholder not in paragraph.text: return False
     replaced = False
     for run in paragraph.runs:
         if placeholder in run.text:
@@ -698,8 +784,7 @@ def insert_recommendations_in_placeholder(parent_container, paragraph, recom_lis
         current_p = new_para
 
 def replace_label_placeholder(paragraph, label_text, placeholder, value):
-    if placeholder not in paragraph.text:
-        return False
+    if placeholder not in paragraph.text: return False
     if paragraph.runs:
         font_name = paragraph.runs[0].font.name or "Arial"
         font_size = paragraph.runs[0].font.size or Pt(11)
@@ -733,12 +818,9 @@ def incrementar_consecutivo_local():
 
 # --- CONSTRUCTOR DE DOCUMENTO ÚNICO INTELIGENTE ---
 def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_file):
-    if template_uploaded:
-        doc_word = Document(template_uploaded)
-    elif os.path.exists("FORMATO RECOMENDACIONES MEDICAS BOT.docx"):
-        doc_word = Document("FORMATO RECOMENDACIONES MEDICAS BOT.docx")
-    else:
-        doc_word = Document()
+    if template_uploaded: doc_word = Document(template_uploaded)
+    elif os.path.exists("FORMATO RECOMENDACIONES MEDICAS BOT.docx"): doc_word = Document("FORMATO RECOMENDACIONES MEDICAS BOT.docx")
+    else: doc_word = Document()
     
     consecutivo_final = datos_trabajador.get("consecutivo", "")
     if not consecutivo_final:
@@ -746,10 +828,8 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
         if g_url:
             try:
                 r = requests.get(g_url, params={
-                    "name": datos_trabajador["nombre"], 
-                    "cargo": datos_trabajador["cargo"], 
-                    "examen": datos_trabajador["tipo_examen"], 
-                    "fecha": fecha.strftime("%Y-%m-%d")
+                    "name": datos_trabajador["nombre"], "cargo": datos_trabajador["cargo"], 
+                    "examen": datos_trabajador["tipo_examen"], "fecha": fecha.strftime("%Y-%m-%d")
                 }, timeout=10)
                 consecutivo_final = r.json().get("consecutive") if r.json().get("status") == "success" else incrementar_consecutivo_local()
             except: consecutivo_final = incrementar_consecutivo_local()
@@ -759,8 +839,7 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
     simple_replacements = {
         "{{NUMERO DE CONSECUTIVO}}": consecutivo_final, 
         "{{TIPO DE EXAMEN}}": datos_trabajador["tipo_examen"].upper(),
-        "{{LUGAR}}": lugar, 
-        "{{FECHA HOY}}": fecha.strftime("%d de %B de %Y"),
+        "{{LUGAR}}": lugar, "{{FECHA HOY}}": fecha.strftime("%d de %B de %Y"),
         "{{NOMBRE DE LA PERSONA}}": datos_trabajador["nombre"].upper(), 
         "{{CARGO DE LA PERSONA}}": datos_trabajador["cargo"].upper(),
         "{{Programa de vigilancia epidemiológica}}": datos_trabajador.get("vigilancia_programa", "NINGUNO").upper()
@@ -855,7 +934,7 @@ def generar_html_vista(datos, consecutivo_num, lugar, fecha):
         <p><strong>observaciones:</strong> {datos['observaciones']}</p>
         <p><strong>remisiones:</strong> {datos['remisiones']}</p><br>
         <p>Atentamente,</p><br>
-        <p><strong>VÍCTOR ALONSO MORENO CASAS</strong><br>Coordinador SST</p>
+        <p><strong>VÍCTOR ALONNO MORENO CASAS</strong><br>Coordinador SST</p>
     </div>
     """
 
@@ -921,7 +1000,6 @@ with col_izq:
         
         archivo_seleccionado = st.selectbox("🎯 Selecciona Colaborador:", list(st.session_state.documentos.keys()))
         
-        # --- SOLUCIÓN DE VISOR NATIVO: RENDERIZADO EN IMAGEN DE ALTA FIDELIDAD SIN BLOQUEOS ---
         if archivo_seleccionado and archivo_seleccionado in st.session_state.pdfs_raw_bytes:
             st.markdown("---")
             st.markdown("<h4 style='color:#60a5fa;'>📄 Soporte Visual de Comparación</h4>", unsafe_allow_html=True)
@@ -938,7 +1016,6 @@ with col_izq:
             with st.expander("👁️ Ver / Ocultar PDF de Origen Subido", expanded=True):
                 with pdfplumber.open(io.BytesIO(bytes_originales)) as preview_pdf:
                     for i, page in enumerate(preview_pdf.pages):
-                        # Convertir vector a imagen PIL para visualización robusta en navegador
                         img_pil = page.to_image(resolution=130).original
                         st.image(img_pil, caption=f"Página {i+1} - {archivo_seleccionado}", use_container_width=True)
     else:
