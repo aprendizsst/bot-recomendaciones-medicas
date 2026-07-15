@@ -10,6 +10,7 @@ import hashlib
 import os
 import datetime
 import re
+import unicodedata
 import requests
 import io
 import zipfile
@@ -320,6 +321,588 @@ def intentar_parsear_fecha(fecha_str):
         
     return datetime.date.today()
 
+
+# --- EXTRACCIÓN ROBUSTA DE IDENTIDAD, CARGO Y LUGAR ---
+# Estas funciones complementan el analizador existente sin cambiar su flujo,
+# sus campos de salida ni la generación de documentos.
+
+_ETIQUETAS_CORTE = [
+    "APELLIDOS Y NOMBRES", "NOMBRES Y APELLIDOS", "NOMBRE DEL TRABAJADOR",
+    "NOMBRE TRABAJADOR", "NOMBRE COMPLETO", "TRABAJADOR", "PACIENTE",
+    "CARGO ACTUAL", "CARGO", "OCUPACIÓN", "OCUPACION", "OFICIO", "PUESTO",
+    "DOCUMENTO", "IDENTIFICACIÓN", "IDENTIFICACION", "CÉDULA", "CEDULA", "C.C.",
+    "CC", "GÉNERO", "GENERO", "EDAD", "TELÉFONO", "TELEFONO", "CELULAR",
+    "EPS", "AFP", "ARL", "EMPRESA", "NIT", "FECHA", "CIUDAD", "MUNICIPIO",
+    "LUGAR", "SEDE", "DIRECCIÓN", "DIRECCION"
+]
+
+_RUIDO_IDENTIDAD = {
+    "DATOS", "DATOS DEL TRABAJADOR", "INFORMACION DEL TRABAJADOR",
+    "INFORMACIÓN DEL TRABAJADOR", "APELLIDOS Y NOMBRES", "NOMBRES Y APELLIDOS",
+    "NOMBRE", "TRABAJADOR", "PACIENTE", "GENERO", "GÉNERO", "EDAD",
+    "DOCUMENTO", "IDENTIFICACION", "IDENTIFICACIÓN", "CEDULA", "CÉDULA",
+    "EMPRESA", "IPS", "EPS", "AFP", "ARL", "FIRMA", "CERTIFICADO"
+}
+
+_RUIDO_CARGO = {
+    "CARGO", "CARGO ACTUAL", "OCUPACION", "OCUPACIÓN", "OFICIO", "PUESTO",
+    "TRABAJADOR", "DATOS", "EMPRESA", "EPS", "AFP", "ARL", "GENERO", "GÉNERO",
+    "DOCUMENTO", "IDENTIFICACION", "IDENTIFICACIÓN", "CERTIFICADO"
+}
+
+_RUIDO_LUGAR = {
+    "LUGAR", "CIUDAD", "MUNICIPIO", "SEDE", "FECHA", "DIA", "DÍA", "MES",
+    "AÑO", "ANO", "REALIZACION", "REALIZACIÓN", "EXAMEN", "EXÁMEN",
+    "CERTIFICADO", "PAGINA", "PÁGINA", "LOGOTIPO", "AM", "PM"
+}
+
+
+def normalizar_etiqueta(texto):
+    """Normaliza únicamente para comparar etiquetas; no modifica el valor final."""
+    if not texto:
+        return ""
+    texto = unicodedata.normalize("NFKD", str(texto))
+    texto = "".join(c for c in texto if not unicodedata.combining(c))
+    texto = texto.upper()
+    texto = re.sub(r"\s+", " ", texto)
+    return texto.strip(" :|_-./")
+
+
+def dividir_columnas_estructuradas(linea):
+    """Divide filas de tablas extraídas por pdfplumber sin romper nombres normales."""
+    if not linea:
+        return []
+    columnas = [
+        re.sub(r"\s+", " ", c).strip(" |/-,_.:")
+        for c in re.split(r"\s{2,}|\t+|\|", linea)
+    ]
+    return [c for c in columnas if c]
+
+
+def recortar_en_siguiente_etiqueta(valor):
+    if not valor:
+        return ""
+    patron = r"\b(?:" + "|".join(
+        sorted((re.escape(e) for e in _ETIQUETAS_CORTE), key=len, reverse=True)
+    ) + r")\b"
+    coincidencias = list(re.finditer(patron, valor, flags=re.IGNORECASE))
+    if coincidencias:
+        # Se conserva la primera parte solo cuando la siguiente etiqueta aparece
+        # después de haber extraído algún valor.
+        primera = coincidencias[0]
+        if primera.start() > 0:
+            valor = valor[:primera.start()]
+    return valor.strip(" |/-,_.:")
+
+
+def limpiar_candidato_campo(valor, tipo):
+    if not valor:
+        return ""
+    valor = str(valor).replace("\x00", " ")
+    valor = re.sub(r"\s+", " ", valor).strip(" |/-,_.:")
+    valor = recortar_en_siguiente_etiqueta(valor)
+
+    # Elimina identificaciones y datos laterales que suelen quedar pegados.
+    valor = re.split(
+        r"\b(?:C\.?\s*C\.?|CÉDULA|CEDULA|DOCUMENTO|IDENTIFICACIÓN|IDENTIFICACION|"
+        r"TELÉFONO|TELEFONO|CELULAR|EDAD|GÉNERO|GENERO|EPS|AFP|ARL)\b",
+        valor,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip(" |/-,_.:")
+
+    if tipo in {"nombre", "cargo"}:
+        valor = re.sub(r"\([^)]*\)", "", valor).strip()
+    elif tipo == "lugar":
+        # Conserva nombres de IPS entre paréntesis solo si son el único dato.
+        valor = re.sub(r"\s+\([^)]*(?:PÁGINA|PAGINA|HORA|AM|PM)[^)]*\)", "", valor, flags=re.IGNORECASE)
+        # En algunas tablas la línea siguiente contiene DÍA | MES | AÑO | CIUDAD.
+        # Se eliminan los componentes de fecha antes de validar el municipio.
+        valor = re.sub(
+            r"^\s*(?:(?:20\d{2})\s*[|/\-.]\s*\d{1,2}\s*[|/\-.]\s*\d{1,2}|"
+            r"\d{1,2}\s*[|/\-.]\s*\d{1,2}\s*[|/\-.]\s*20\d{2})\s*[|/\-,_.:]*\s*",
+            "",
+            valor,
+        )
+        if "|" in valor:
+            partes_lugar = [
+                p.strip(" |/-,_.:")
+                for p in valor.split("|")
+                if p.strip(" |/-,_.:")
+            ]
+            partes_con_letras = [
+                p for p in partes_lugar
+                if sum(c.isalpha() for c in p) >= 3
+            ]
+            if partes_con_letras:
+                valor = partes_con_letras[-1]
+
+    return re.sub(r"\s+", " ", valor).strip(" |/-,_.:")
+
+
+def candidato_nombre_valido(valor):
+    valor = limpiar_candidato_campo(valor, "nombre")
+    if not valor or len(valor) < 5 or len(valor) > 100:
+        return False
+    if re.search(r"\d|@|https?://", valor):
+        return False
+    tokens = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]+", valor)
+    if len(tokens) < 2 or len(tokens) > 8:
+        return False
+    norm = normalizar_etiqueta(valor)
+    if norm in {normalizar_etiqueta(x) for x in _RUIDO_IDENTIDAD}:
+        return False
+    if any(
+        ruido in norm
+        for ruido in [
+            "CERTIFICADO", "MEDICINA", "OCUPACIONAL", "EMPRESA", "INSTITUCION",
+            "INSTITUCIÓN", "LABORATORIO", "CENTRO MEDICO", "CENTRO MÉDICO",
+            "SALUD OCUPACIONAL", "FIRMA DEL", "NOMBRE DEL MEDICO", "NOMBRE DEL MÉDICO"
+        ]
+    ):
+        return False
+    letras = sum(c.isalpha() for c in valor)
+    return letras / max(len(valor), 1) >= 0.65
+
+
+def candidato_cargo_valido(valor):
+    valor = limpiar_candidato_campo(valor, "cargo")
+    if not valor or len(valor) < 3 or len(valor) > 120:
+        return False
+    norm = normalizar_etiqueta(valor)
+    if norm in {normalizar_etiqueta(x) for x in _RUIDO_CARGO}:
+        return False
+    if any(
+        ruido in norm
+        for ruido in [
+            "CERTIFICADO", "MEDICO OCUPACIONAL", "MÉDICO OCUPACIONAL",
+            "FIRMA", "DOCUMENTO", "IDENTIFICACION", "IDENTIFICACIÓN",
+            "FECHA DE NACIMIENTO", "GENERO", "GÉNERO"
+        ]
+    ):
+        return False
+    if re.fullmatch(r"[\d\s./-]+", valor):
+        return False
+    return sum(c.isalpha() for c in valor) >= 3
+
+
+def candidato_lugar_valido(valor):
+    valor = limpiar_candidato_campo(valor, "lugar")
+    if not valor or len(valor) < 3 or len(valor) > 100:
+        return False
+    if re.search(r"https?://|www\.|@", valor, flags=re.IGNORECASE):
+        return False
+    if re.fullmatch(r"[\d\s:./-]+", valor):
+        return False
+    norm = normalizar_etiqueta(valor)
+    if norm in {normalizar_etiqueta(x) for x in _RUIDO_LUGAR}:
+        return False
+    if any(
+        ruido in norm
+        for ruido in [
+            "PAGINA", "CERTIFICADO", "LOGOTIPO", "FIRMA", "CONSENTIMIENTO",
+            "HORA DE IMPRESION", "HORA DE IMPRESIÓN", "A.M", "P.M"
+        ]
+    ):
+        return False
+    return sum(c.isalpha() for c in valor) >= 3
+
+
+def elegir_mejor_candidato(candidatos, tipo):
+    validadores = {
+        "nombre": candidato_nombre_valido,
+        "cargo": candidato_cargo_valido,
+        "lugar": candidato_lugar_valido,
+    }
+    validador = validadores[tipo]
+    mejores = []
+
+    for puntaje, valor, origen in candidatos:
+        limpio = limpiar_candidato_campo(valor, tipo)
+        if not validador(limpio):
+            continue
+
+        tokens = limpio.split()
+        if tipo == "nombre":
+            if 2 <= len(tokens) <= 5:
+                puntaje += 8
+            if limpio.upper() == limpio:
+                puntaje += 3
+        elif tipo == "cargo":
+            if 1 <= len(tokens) <= 7:
+                puntaje += 4
+        elif tipo == "lugar":
+            if 1 <= len(tokens) <= 5:
+                puntaje += 4
+
+        mejores.append((puntaje, -len(limpio), limpio, origen))
+
+    if not mejores:
+        return ""
+
+    mejores.sort(reverse=True)
+    valor = mejores[0][2]
+    if tipo == "nombre":
+        return valor.title()
+    if tipo == "cargo":
+        return corregir_ortografia_sst(valor).title()
+    return valor.title()
+
+
+def _coincide_etiqueta(columna, etiquetas):
+    norm = normalizar_etiqueta(columna)
+    return any(
+        norm == normalizar_etiqueta(etiqueta)
+        or normalizar_etiqueta(etiqueta) in norm
+        for etiqueta in etiquetas
+    )
+
+
+def extraer_campo_por_etiquetas(lineas, etiquetas, tipo):
+    """
+    Obtiene candidatos en tres estructuras frecuentes:
+    1. ETIQUETA: valor
+    2. ETIQUETA    valor
+    3. fila de encabezados + fila de valores.
+    """
+    candidatos = []
+    etiquetas_ordenadas = sorted(etiquetas, key=len, reverse=True)
+    patron_etiquetas = "|".join(re.escape(e) for e in etiquetas_ordenadas)
+
+    for idx, linea in enumerate(lineas):
+        if not linea or not linea.strip():
+            continue
+
+        # Valor en la misma línea después de dos puntos, guion o separación de tabla.
+        m_inline = re.search(
+            rf"(?:{patron_etiquetas})(?:\s*[:=]\s*|\s+-\s+|\s{{2,}}|\|)\s*(.+)$",
+            linea,
+            flags=re.IGNORECASE,
+        )
+        if m_inline:
+            candidatos.append((115, m_inline.group(1), "etiqueta en línea"))
+
+        columnas_header = dividir_columnas_estructuradas(linea)
+        indices = [
+            pos
+            for pos, col in enumerate(columnas_header)
+            if _coincide_etiqueta(col, etiquetas)
+        ]
+
+        if indices:
+            for offset in range(1, 5):
+                if idx + offset >= len(lineas):
+                    break
+                siguiente = lineas[idx + offset].strip()
+                if not siguiente:
+                    continue
+
+                columnas_valor = dividir_columnas_estructuradas(siguiente)
+                for pos in indices:
+                    if pos < len(columnas_valor):
+                        candidatos.append(
+                            (105 - offset, columnas_valor[pos], "tabla encabezado/valor")
+                        )
+
+                # Si la etiqueta ocupa toda la línea, la línea siguiente completa
+                # suele ser el dato, aunque el PDF haya perdido columnas.
+                norm_linea = normalizar_etiqueta(linea)
+                if any(
+                    norm_linea == normalizar_etiqueta(etiqueta)
+                    for etiqueta in etiquetas
+                ):
+                    candidatos.append((100 - offset, siguiente, "línea siguiente"))
+                break
+
+        # Etiqueta ubicada al inicio, pero sin separador reconocible.
+        norm_linea = normalizar_etiqueta(linea)
+        for etiqueta in etiquetas_ordenadas:
+            norm_etiqueta = normalizar_etiqueta(etiqueta)
+            if norm_linea.startswith(norm_etiqueta) and len(norm_linea) > len(norm_etiqueta):
+                resto = linea[len(etiqueta):].strip(" |/-,_.:")
+                if resto:
+                    candidatos.append((92, resto, "etiqueta inicial"))
+                break
+
+    return elegir_mejor_candidato(candidatos, tipo)
+
+
+def extraer_fecha_y_lugar_robusto(lineas, texto_completo):
+    candidatos_lugar = []
+    fechas = []
+
+    patron_fecha_dmy = re.compile(
+        r"\b(\d{1,2})\s*(?:[|/\-.]|\s)\s*(\d{1,2})\s*(?:[|/\-.]|\s)\s*(20\d{2})\b"
+    )
+    patron_fecha_ymd = re.compile(
+        r"\b(20\d{2})\s*(?:[|/\-.]|\s)\s*(\d{1,2})\s*(?:[|/\-.]|\s)\s*(\d{1,2})\b"
+    )
+
+    # Tablas con encabezados DÍA | MES | AÑO | CIUDAD/MUNICIPIO.
+    for idx, linea in enumerate(lineas):
+        columnas = dividir_columnas_estructuradas(linea)
+        columnas_norm = [normalizar_etiqueta(c) for c in columnas]
+
+        ciudad_indices = [
+            i for i, c in enumerate(columnas_norm)
+            if any(k in c for k in ["CIUDAD", "MUNICIPIO", "LUGAR", "SEDE"])
+        ]
+
+        if ciudad_indices and any(
+            k in " ".join(columnas_norm)
+            for k in ["DIA", "MES", "ANO", "FECHA", "REALIZACION"]
+        ):
+            for offset in range(1, 4):
+                if idx + offset >= len(lineas):
+                    break
+                valores = dividir_columnas_estructuradas(lineas[idx + offset])
+                for pos in ciudad_indices:
+                    if pos < len(valores):
+                        candidatos_lugar.append(
+                            (125 - offset, valores[pos], "tabla fecha/lugar")
+                        )
+                linea_valores = lineas[idx + offset]
+                m_dmy = patron_fecha_dmy.search(linea_valores)
+                m_ymd = patron_fecha_ymd.search(linea_valores)
+                try:
+                    if m_ymd:
+                        fechas.append(
+                            (
+                                120 - offset,
+                                datetime.date(
+                                    int(m_ymd.group(1)),
+                                    int(m_ymd.group(2)),
+                                    int(m_ymd.group(3)),
+                                ),
+                            )
+                        )
+                    elif m_dmy:
+                        fechas.append(
+                            (
+                                120 - offset,
+                                datetime.date(
+                                    int(m_dmy.group(3)),
+                                    int(m_dmy.group(2)),
+                                    int(m_dmy.group(1)),
+                                ),
+                            )
+                        )
+                except ValueError:
+                    pass
+                if valores:
+                    break
+
+        m_dmy = patron_fecha_dmy.search(linea)
+        m_ymd = patron_fecha_ymd.search(linea)
+        m_fecha = m_ymd or m_dmy
+        if m_fecha:
+            try:
+                if m_ymd:
+                    fecha_detectada = datetime.date(
+                        int(m_ymd.group(1)),
+                        int(m_ymd.group(2)),
+                        int(m_ymd.group(3)),
+                    )
+                else:
+                    fecha_detectada = datetime.date(
+                        int(m_dmy.group(3)),
+                        int(m_dmy.group(2)),
+                        int(m_dmy.group(1)),
+                    )
+                fechas.append((90, fecha_detectada))
+            except ValueError:
+                pass
+
+            antes = linea[:m_fecha.start()].strip(" |/-,_.:")
+            despues = linea[m_fecha.end():].strip(" |/-,_.:")
+
+            contexto = normalizar_etiqueta(linea)
+            puntaje = 118 if any(
+                k in contexto
+                for k in ["REALIZACION", "CIUDAD", "MUNICIPIO", "LUGAR", "SEDE"]
+            ) else 78
+
+            if despues:
+                candidatos_lugar.append((puntaje, despues, "después de fecha"))
+            if antes and len(antes.split()) <= 7:
+                # Evita usar el encabezado como ciudad.
+                antes = re.sub(
+                    r"(?i)\b(?:FECHA|CIUDAD|MUNICIPIO|LUGAR|REALIZACI[ÓO]N|DEL EXAMEN|DEL EXÁMEN)\b",
+                    "",
+                    antes,
+                ).strip(" |/-,_.:")
+                if antes:
+                    candidatos_lugar.append((puntaje - 5, antes, "antes de fecha"))
+
+    # Formatos como "Tunja, 15 de junio de 2026".
+    meses = (
+        "enero|febrero|marzo|abril|mayo|junio|julio|agosto|"
+        "septiembre|octubre|noviembre|diciembre"
+    )
+    patron_ciudad_fecha = re.compile(
+        rf"\b([A-Za-zÁÉÍÓÚÜÑáéíóúüñ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ .'-]{{2,45}}),?\s+"
+        rf"(\d{{1,2}}\s+de\s+(?:{meses})\s+de\s+20\d{{2}})\b",
+        flags=re.IGNORECASE,
+    )
+    for m in patron_ciudad_fecha.finditer(texto_completo):
+        lugar = m.group(1).strip()
+        # Toma solo el segmento final si quedó unido a texto anterior.
+        lugar = re.split(r"\n|[:;]", lugar)[-1].strip()
+        candidatos_lugar.append((112, lugar, "ciudad y fecha en letras"))
+        try:
+            fechas.append((112, intentar_parsear_fecha(m.group(2))))
+        except Exception:
+            pass
+
+    etiquetas_lugar = [
+        "FECHA Y CIUDAD DE REALIZACIÓN",
+        "FECHA Y CIUDAD DE REALIZACION",
+        "CIUDAD DE REALIZACIÓN",
+        "CIUDAD DE REALIZACION",
+        "LUGAR DE REALIZACIÓN",
+        "LUGAR DE REALIZACION",
+        "MUNICIPIO DE REALIZACIÓN",
+        "MUNICIPIO DE REALIZACION",
+        "LUGAR DEL EXAMEN",
+        "LUGAR DONDE SE REALIZÓ EL EXAMEN",
+        "LUGAR DONDE SE REALIZO EL EXAMEN",
+        "LUGAR DONDE SE REALIZARON LOS EXÁMENES",
+        "LUGAR DONDE SE REALIZARON LOS EXAMENES",
+        "CIUDAD DEL EXAMEN",
+        "MUNICIPIO DEL EXAMEN",
+        "SEDE DE ATENCIÓN",
+        "SEDE DE ATENCION",
+        "CENTRO MÉDICO",
+        "CENTRO MEDICO",
+        "IPS PRESTADORA",
+        "IPS QUE REALIZA EL EXAMEN",
+        "CIUDAD",
+        "MUNICIPIO",
+        "SEDE",
+    ]
+    lugar_etiquetado = extraer_campo_por_etiquetas(
+        lineas, etiquetas_lugar, "lugar"
+    )
+    if lugar_etiquetado:
+        candidatos_lugar.append((130, lugar_etiquetado, "etiqueta explícita"))
+
+    lugar = elegir_mejor_candidato(candidatos_lugar, "lugar")
+    fecha = max(fechas, key=lambda item: item[0])[1] if fechas else datetime.date.today()
+    return fecha, lugar
+
+
+def extraer_identidad_cargo_lugar(texto):
+    lineas = [line.rstrip() for line in texto.splitlines()]
+    etiquetas_nombre = [
+        "APELLIDOS Y NOMBRES DEL TRABAJADOR",
+        "NOMBRES Y APELLIDOS DEL TRABAJADOR",
+        "APELLIDOS Y NOMBRES",
+        "NOMBRES Y APELLIDOS",
+        "NOMBRE DEL TRABAJADOR",
+        "NOMBRE TRABAJADOR",
+        "NOMBRE COMPLETO",
+        "NOMBRES COMPLETOS",
+        "NOMBRE(S) Y APELLIDO(S)",
+        "APELLIDO(S) Y NOMBRE(S)",
+        "NOMBRE Y APELLIDOS",
+        "NOMBRES DEL TRABAJADOR",
+        "TRABAJADOR",
+        "PACIENTE",
+    ]
+    etiquetas_cargo = [
+        "CARGO ACTUAL DEL TRABAJADOR",
+        "CARGO DEL TRABAJADOR",
+        "CARGO ACTUAL",
+        "OCUPACIÓN ACTUAL",
+        "OCUPACION ACTUAL",
+        "OCUPACIÓN",
+        "OCUPACION",
+        "PUESTO DE TRABAJO",
+        "OCUPACIÓN DEL TRABAJADOR",
+        "OCUPACION DEL TRABAJADOR",
+        "CARGO U OCUPACIÓN",
+        "CARGO U OCUPACION",
+        "CARGO / OCUPACIÓN",
+        "CARGO / OCUPACION",
+        "PUESTO",
+        "OFICIO",
+        "LABOR",
+        "CARGO",
+    ]
+
+    nombre = extraer_campo_por_etiquetas(
+        lineas, etiquetas_nombre, "nombre"
+    )
+    cargo = extraer_campo_por_etiquetas(
+        lineas, etiquetas_cargo, "cargo"
+    )
+    fecha, lugar = extraer_fecha_y_lugar_robusto(
+        lineas, texto
+    )
+
+    return {
+        "nombre": nombre,
+        "cargo": cargo,
+        "fecha": fecha,
+        "lugar": lugar,
+    }
+
+
+def extraer_texto_pdf_robusto(pdf_raw_data):
+    """
+    Conserva el texto normal y agrega una representación de las tablas.
+    Esto mejora especialmente nombre, cargo y ciudad sin alterar el resto
+    del análisis existente.
+    """
+    lineas_salida = []
+    vistos = set()
+
+    def agregar(fragmento):
+        if not fragmento:
+            return
+        for linea in str(fragmento).splitlines():
+            # Se mantienen las separaciones amplias porque representan columnas
+            # y permiten asociar correctamente encabezados con sus valores.
+            linea = linea.replace("\t", "    ").strip()
+            if not linea:
+                continue
+            clave = normalizar_etiqueta(linea)
+            if clave and clave not in vistos:
+                vistos.add(clave)
+                lineas_salida.append(linea)
+
+    with pdfplumber.open(io.BytesIO(pdf_raw_data)) as p_file:
+        for numero_pagina, page in enumerate(p_file.pages, start=1):
+            texto_layout = page.extract_text(
+                x_tolerance=2,
+                y_tolerance=3,
+                layout=True,
+            ) or ""
+            texto_normal = page.extract_text(
+                x_tolerance=2,
+                y_tolerance=3,
+                layout=False,
+            ) or ""
+            agregar(texto_layout)
+            agregar(texto_normal)
+
+            tablas = page.extract_tables() or []
+            for tabla in tablas:
+                for fila in tabla or []:
+                    celdas = []
+                    for celda in fila or []:
+                        celda_limpia = re.sub(
+                            r"\s+",
+                            " ",
+                            (celda or "").replace("\n", " "),
+                        ).strip()
+                        celdas.append(celda_limpia)
+                    if any(celdas):
+                        agregar(" | ".join(celdas))
+
+    return "\n".join(lineas_salida)
+
+
 # --- ANALIZADOR INTELIGENTE MULTILÍNEA GENERALIZADO ---
 def analizar_pdf_inteligente(texto):
     datos = {
@@ -330,76 +913,26 @@ def analizar_pdf_inteligente(texto):
         "lugar": "Tunja",
         "fecha": datetime.date.today()
     }
-    if not texto: return datos
+    if not texto:
+        return datos
 
-    lineas_raw = texto.split('\n')
+    lineas_raw = texto.split("\n")
 
-    # --- PRE-ESCÁNER DE GRILLAS COMPACTAS (IDENTIDAD Y UBICACIÓN) ---
-    for idx, line in enumerate(lineas_raw):
-        l_up = line.upper().strip()
-        
-        if "APELLIDOS Y NOMBRES" in l_up or "NOMBRES Y APELLIDOS" in l_up:
-            for offset in [1, 2]:
-                if idx + offset < len(lineas_raw):
-                    l_val = lineas_raw[idx + offset].strip()
-                    cols = [c.strip(" |/-,_.") for c in re.split(r'\s{2,}|\|', l_val) if c.strip()]
-                    if cols and len(cols[0]) > 4 and not any(h in cols[0].upper() for h in ["GÉNERO", "EDAD", "DOCUMENTO", "TIPO", "APELLIDOS", "NOMBRES", "DATOS"]):
-                        datos["nombre"] = cols[0].title()
-                        break
+    # Extracción prioritaria y robusta de los tres campos que suelen venir
+    # dentro de tablas: trabajador, cargo y lugar de realización.
+    identificacion = extraer_identidad_cargo_lugar(texto)
 
-        if "FECHA Y CIUDAD DE REALIZACIÓN" in l_up or "FECHA Y CIUDAD DE REALIZACION" in l_up or "REALIZACIÓN DEL EXÁMEN" in l_up or "REALIZACION DEL EXAMEN" in l_up:
-            for offset in [1, 2]:
-                if idx + offset < len(lineas_raw):
-                    l_val = lineas_raw[idx + offset].strip()
-                    m_f_grid = re.search(r'\b(\d{1,2})\s*[\s\|/-]\s*(\d{1,2})\s*[\s\|/-]\s*(20\d{2})\b', l_val)
-                    if m_f_grid:
-                        try:
-                            datos["fecha"] = datetime.date(int(m_f_grid.group(3)), int(m_f_grid.group(2)), int(m_f_grid.group(1)))
-                        except: pass
-                        resto = l_val[m_f_grid.end():].strip(" |/-,_.")
-                        resto_clean = re.sub(r'\(.*?\)', '', resto).strip(" |/-,_.")
-                        resto_clean = re.sub(r'\b(CIUDAD|MUNICIPIO|DÍA|MES|AÑO|DIA|ANIO)\b', '', resto_clean, flags=re.IGNORECASE).strip(" |/-,_.")
-                        if resto_clean and len(resto_clean) > 2 and not any(m in resto_clean.upper() for m in ["PÁGINA", "PAGINA", "CERTIFICADO", "P.M.", "A.M."]) and not es_vacio_o_estado(resto_clean):
-                            datos["lugar"] = resto_clean.title()
-                            break
-                    else:
-                        cols_fc = [c.strip(" |/-,_.") for c in re.split(r'\s{2,}|\|', l_val) if c.strip()]
-                        if cols_fc and len(cols_fc[0]) > 2 and not any(h in cols_fc[0].upper() for h in ["CIUDAD", "MUNICIPIO", "FECHA", "DÍA", "PÁGINA", "PAGINA", "CERTIFICADO", "AÑO", "MES"]):
-                            datos["lugar"] = re.sub(r'\(.*?\)', '', cols_fc[0]).strip(" |/-,_.").title()
-                            break
+    if identificacion.get("nombre"):
+        datos["nombre"] = identificacion["nombre"]
 
-        if "CARGO" in l_up and len(l_up) < 15:
-            for offset in [1, 2]:
-                if idx + offset < len(lineas_raw):
-                    l_val = lineas_raw[idx + offset].strip()
-                    cols_c = [c.strip(" |/-,_.") for c in re.split(r'\s{2,}|\|', l_val) if c.strip()]
-                    if cols_c and len(cols_c[0]) > 3 and not any(h in cols_c[0].upper() for h in ["EPS", "ARP", "AFP", "DATOS", "CARGO", "TRABAJADOR", "GÉNERO"]):
-                        datos["cargo"] = corregir_ortografia_sst(cols_c[0].strip()).title()
-                        break
+    if identificacion.get("cargo"):
+        datos["cargo"] = identificacion["cargo"]
 
-    # --- ESCÁNER GLOBAL DE RESPALDO (CON EXCLUSIÓN ESTRICTA DE METADATOS) ---
-    for line in lineas_raw:
-        m_f_glob = re.search(r'\b(\d{1,2})\s*[\s\|/-]\s*(\d{1,2})\s*[\s\|/-]\s*(20\d{2})\b', line)
-        if m_f_glob:
-            try:
-                if datos["fecha"] == datetime.date.today():
-                    datos["fecha"] = datetime.date(int(m_f_glob.group(3)), int(m_f_glob.group(2)), int(m_f_glob.group(1)))
-                resto = line[m_f_glob.end():].strip(" |/-,_.")
-                resto_clean = re.sub(r'\(.*?\)', '', resto).strip(" |/-,_.")
-                resto_clean = re.sub(r'\b(CIUDAD|MUNICIPIO|DÍA|MES|AÑO|DIA|ANIO)\b', '', resto_clean, flags=re.IGNORECASE).strip(" |/-,_.")
-                # CORRECCIÓN EXCLUSIÓN: Si contiene trazas de pie de página/tiempos de Chrome, ignorarlo por completo
-                if resto_clean and len(resto_clean) > 2 and not any(m in resto_clean.upper() for m in ["PÁGINA", "PAGINA", "CERTIFICADO", "P.M.", "A.M.", "LOGOTIPO"]) and not es_vacio_o_estado(resto_clean):
-                    datos["lugar"] = resto_clean.title()
-            except: pass
+    if identificacion.get("lugar"):
+        datos["lugar"] = identificacion["lugar"]
 
-    if not datos["lugar"] or datos["lugar"] == "Tunja":
-        m_lugar = re.search(r'(?:Lugar|Ciudad|Municipio):\s*([A-Za-zñáéíóúÜÑ\s]+)', texto, re.IGNORECASE)
-        if m_lugar: datos["lugar"] = re.sub(r'[:\-,_]+', '', m_lugar.group(1)).strip().title()
-
-    m_comb = re.search(r'\b([A-Za-zñáéíóúÜÑ]+),\s*(\d{1,2}\s+de\s+[a-zA-Zíó]+\s+de\s+20\d{2})', texto, re.IGNORECASE)
-    if m_comb:
-        if not datos["lugar"] or datos["lugar"] == "Tunja": datos["lugar"] = m_comb.group(1).strip().title()
-        if datos["fecha"] == datetime.date.today(): datos["fecha"] = intentar_parsear_fecha(m_comb.group(2))
+    if identificacion.get("fecha"):
+        datos["fecha"] = identificacion["fecha"]
 
     EXAMS_MAP = {
         "AUDIOMETRIA DE TONOS": "Audiometría", "AUDIOMETRIA": "Audiometría",
@@ -922,8 +1455,8 @@ with col_izq:
             if pdf.name not in st.session_state.documentos:
                 pdf_raw_data = pdf.read()
                 st.session_state.pdfs_raw_bytes[pdf.name] = pdf_raw_data
-                with pdfplumber.open(io.BytesIO(pdf_raw_data)) as p_file:
-                    texto_raw = "".join([page.extract_text() + "\n" for page in p_file.pages])
+                texto_raw = extraer_texto_pdf_robusto(pdf_raw_data)
+                st.session_state.textos_raw[pdf.name] = texto_raw
                 st.session_state.documentos[pdf.name] = analizar_pdf_inteligente(texto_raw)
         
         st.markdown(f"""
