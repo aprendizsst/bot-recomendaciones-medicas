@@ -231,75 +231,6 @@ if "prev_colaborador" not in st.session_state:
 if "document_count" not in st.session_state:
     st.session_state.document_count = 0
 
-# --- PANTALLAS DE ACCESO ---
-if not st.session_state.logged_in:
-    st.markdown("<div class='login-box'>", unsafe_allow_html=True)
-    st.markdown("<h2>🔑 Acceso Seguro</h2>", unsafe_allow_html=True)
-    st.markdown("<p>Portal Interno de Medicina Preventiva - JER S.A.</p>", unsafe_allow_html=True)
-    
-    if not tiene_usuarios():
-        st.warning("🆕 Bienvenido. Configura tu cuenta inicial de Administrador.")
-        with st.form("form_registro_inicial"):
-            reg_nombre = st.text_input("Nombre Completo", key="init_admin_fullname")
-            reg_user = st.text_input("Nombre de Usuario (Login)", key="init_admin_username")
-            reg_pwd = st.text_input("Contraseña", type="password", key="init_admin_password")
-            submit_init = st.form_submit_button("Crear Administrador")
-            if submit_init:
-                if reg_nombre and reg_user and reg_pwd:
-                    if registrar_usuario(reg_user, reg_pwd, reg_nombre):
-                        st.success("¡Administrador creado con éxito!")
-                        st.rerun()
-                else:
-                    st.warning("Completa todos los campos.")
-    else:
-        opcion_acceso = st.radio("Elige una acción:", ["Iniciar Sesión", "Crear Nueva Cuenta", "Actualizar Contraseña"], horizontal=True, key="sistema_tabs_acceso")
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        if opcion_acceso == "Iniciar Sesión":
-            with st.form("form_inicio_sesion"):
-                log_user = st.text_input("Usuario", key="login_username_field")
-                log_pwd = st.text_input("Contraseña", type="password", key="login_password_field")
-                submit_login = st.form_submit_button("Ingresar al Sistema")
-                if submit_login:
-                    nombre_usuario = verificar_usuario(log_user, log_pwd)
-                    if nombre_usuario:
-                        st.session_state.logged_in = True
-                        st.session_state.username = nombre_usuario
-                        st.rerun()
-                    else:
-                        st.error("❌ Credenciales incorrectas.")
-                        
-        elif opcion_acceso == "Crear Nueva Cuenta":
-            with st.form("form_crear_cuenta"):
-                reg_nombre = st.text_input("Nombre Completo", key="register_fullname_field")
-                reg_user = st.text_input("Nombre de Usuario", key="register_username_field")
-                reg_pwd = st.text_input("Contraseña", type="password", key="register_password_field")
-                submit_reg = st.form_submit_button("Registrar Cuenta")
-                if submit_reg:
-                    if reg_nombre and reg_user and reg_pwd:
-                        if registrar_usuario(reg_user, reg_pwd, reg_nombre):
-                            st.success("🎉 Cuenta creada. Cambia a 'Iniciar Sesión'.")
-                        else:
-                            st.error("❌ El usuario ya existe.")
-                    else:
-                        st.warning("Completa todos los campos.")
-                        
-        elif opcion_acceso == "Actualizar Contraseña":
-            with st.form("form_update_password"):
-                upd_user = st.text_input("Usuario", key="update_username_field")
-                upd_old_pwd = st.text_input("Contraseña Actual", type="password", key="update_old_password_field")
-                upd_new_pwd = st.text_input("Nueva Contraseña", type="password", key="update_new_password_field")
-                submit_upd = st.form_submit_button("Cambiar Contraseña")
-                if submit_upd:
-                    if upd_user and upd_old_pwd and upd_new_pwd:
-                        if actualizar_contrasena(upd_user, upd_old_pwd, upd_new_pwd):
-                            st.success("✅ Contraseña actualizada con éxito.")
-                        else:
-                            st.error("❌ Error en los datos proporcionados.")
-                        
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.stop()
-
 # --- REVISOR Y CORRECTOR DE ORTOGRAFÍA SST ---
 def corregir_ortografia_sst(texto):
     if not texto: return ""
@@ -407,48 +338,57 @@ def analizar_pdf_inteligente(texto):
     for idx, line in enumerate(lineas_raw):
         l_up = line.upper().strip()
         
-        if "APELLIDOS Y NOMBRES" in l_up:
-            if idx + 1 < len(lineas_raw):
-                l_val = lineas_raw[idx + 1].strip()
-                cols = [c.strip(" |/-,_.") for c in re.split(r'\s{2,}|\|', l_val) if c.strip()]
-                if cols and not any(h in cols[0].upper() for h in ["GÉNERO", "EDAD", "DOCUMENTO", "TIPO", "APELLIDOS"]):
-                    datos["nombre"] = cols[0].title()
+        if "APELLIDOS Y NOMBRES" in l_up or "NOMBRES Y APELLIDOS" in l_up:
+            for offset in [1, 2]:
+                if idx + offset < len(lineas_raw):
+                    l_val = lineas_raw[idx + offset].strip()
+                    cols = [c.strip(" |/-,_.") for c in re.split(r'\s{2,}|\|', l_val) if c.strip()]
+                    if cols and len(cols[0]) > 4 and not any(h in cols[0].upper() for h in ["GÉNERO", "EDAD", "DOCUMENTO", "TIPO", "APELLIDOS", "NOMBRES", "DATOS"]):
+                        datos["nombre"] = cols[0].title()
+                        break
 
-        if "FECHA Y CIUDAD DE REALIZACIÓN" in l_up or "FECHA Y CIUDAD DE REALIZACION" in l_up:
-            if idx + 1 < len(lineas_raw):
-                l_val = lineas_raw[idx + 1].strip()
-                m_f_grid = re.search(r'\b(\d{1,2})\s*[\s\|/-]\s*(\d{1,2})\s*[\s\|/-]\s*(20\d{2})\b', l_val)
-                if m_f_grid:
-                    try:
-                        datos["fecha"] = datetime.date(int(m_f_grid.group(3)), int(m_f_grid.group(2)), int(m_f_grid.group(1)))
-                    except: pass
-                    resto = l_val[m_f_grid.end():].strip(" |/-,_.")
-                    if resto:
+        if "FECHA Y CIUDAD DE REALIZACIÓN" in l_up or "FECHA Y CIUDAD DE REALIZACION" in l_up or "REALIZACIÓN DEL EXÁMEN" in l_up or "REALIZACION DEL EXAMEN" in l_up:
+            for offset in [1, 2]:
+                if idx + offset < len(lineas_raw):
+                    l_val = lineas_raw[idx + offset].strip()
+                    m_f_grid = re.search(r'\b(\d{1,2})\s*[\s\|/-]\s*(\d{1,2})\s*[\s\|/-]\s*(20\d{2})\b', l_val)
+                    if m_f_grid:
+                        try:
+                            datos["fecha"] = datetime.date(int(m_f_grid.group(3)), int(m_f_grid.group(2)), int(m_f_grid.group(1)))
+                        except: pass
+                        resto = l_val[m_f_grid.end():].strip(" |/-,_.")
                         resto_clean = re.sub(r'\(.*?\)', '', resto).strip(" |/-,_.")
-                        if resto_clean and not resto_clean.upper() in ["CIUDAD", "MUNICIPIO"]:
+                        resto_clean = re.sub(r'\b(CIUDAD|MUNICIPIO|DÍA|MES|AÑO|DIA|ANIO)\b', '', resto_clean, flags=re.IGNORECASE).strip(" |/-,_.")
+                        if resto_clean and len(resto_clean) > 2 and not any(m in resto_clean.upper() for m in ["PÁGINA", "PAGINA", "CERTIFICADO", "P.M.", "A.M."]) and not es_vacio_o_estado(resto_clean):
                             datos["lugar"] = resto_clean.title()
-                else:
-                    cols_fc = [c.strip(" |/-,_.") for c in re.split(r'\s{2,}|\|', l_val) if c.strip()]
-                    if cols_fc and len(cols_fc[0]) > 2 and not cols_fc[0].upper() in ["CIUDAD", "MUNICIPIO"]:
-                        datos["lugar"] = re.sub(r'\(.*?\)', '', cols_fc[0]).strip(" |/-,_.").title()
+                            break
+                    else:
+                        cols_fc = [c.strip(" |/-,_.") for c in re.split(r'\s{2,}|\|', l_val) if c.strip()]
+                        if cols_fc and len(cols_fc[0]) > 2 and not any(h in cols_fc[0].upper() for h in ["CIUDAD", "MUNICIPIO", "FECHA", "DÍA", "PÁGINA", "PAGINA", "CERTIFICADO", "AÑO", "MES"]):
+                            datos["lugar"] = re.sub(r'\(.*?\)', '', cols_fc[0]).strip(" |/-,_.").title()
+                            break
 
-        if "CARGO" in l_up and len(l_up) < 10:
-            if idx + 1 < len(lineas_raw):
-                l_val = lineas_raw[idx + 1].strip()
-                cols_c = [c.strip(" |/-,_.") for c in re.split(r'\s{2,}|\|', l_val) if c.strip()]
-                if cols_c and not any(h in cols_c[0].upper() for h in ["EPS", "ARP", "AFP", "DATOS", "CARGO"]):
-                    datos["cargo"] = corregir_ortografia_sst(cols_c[0].strip()).title()
+        if "CARGO" in l_up and len(l_up) < 15:
+            for offset in [1, 2]:
+                if idx + offset < len(lineas_raw):
+                    l_val = lineas_raw[idx + offset].strip()
+                    cols_c = [c.strip(" |/-,_.") for c in re.split(r'\s{2,}|\|', l_val) if c.strip()]
+                    if cols_c and len(cols_c[0]) > 3 and not any(h in cols_c[0].upper() for h in ["EPS", "ARP", "AFP", "DATOS", "CARGO", "TRABAJADOR", "GÉNERO"]):
+                        datos["cargo"] = corregir_ortografia_sst(cols_c[0].strip()).title()
+                        break
 
-    # --- ESCÁNER GLOBAL ROBUSTO DE FECHA Y MUNICIPIO (SOPORTE DE FORMATO) ---
+    # --- ESCÁNER GLOBAL DE RESPALDO (CON EXCLUSIÓN ESTRICTA DE METADATOS) ---
     for line in lineas_raw:
         m_f_glob = re.search(r'\b(\d{1,2})\s*[\s\|/-]\s*(\d{1,2})\s*[\s\|/-]\s*(20\d{2})\b', line)
         if m_f_glob:
             try:
-                datos["fecha"] = datetime.date(int(m_f_glob.group(3)), int(m_f_glob.group(2)), int(m_f_glob.group(1)))
+                if datos["fecha"] == datetime.date.today():
+                    datos["fecha"] = datetime.date(int(m_f_glob.group(3)), int(m_f_glob.group(2)), int(m_f_glob.group(1)))
                 resto = line[m_f_glob.end():].strip(" |/-,_.")
                 resto_clean = re.sub(r'\(.*?\)', '', resto).strip(" |/-,_.")
                 resto_clean = re.sub(r'\b(CIUDAD|MUNICIPIO|DÍA|MES|AÑO|DIA|ANIO)\b', '', resto_clean, flags=re.IGNORECASE).strip(" |/-,_.")
-                if resto_clean and len(resto_clean) > 2 and not es_vacio_o_estado(resto_clean):
+                # CORRECCIÓN EXCLUSIÓN: Si contiene trazas de pie de página/tiempos de Chrome, ignorarlo por completo
+                if resto_clean and len(resto_clean) > 2 and not any(m in resto_clean.upper() for m in ["PÁGINA", "PAGINA", "CERTIFICADO", "P.M.", "A.M.", "LOGOTIPO"]) and not es_vacio_o_estado(resto_clean):
                     datos["lugar"] = resto_clean.title()
             except: pass
 
@@ -572,11 +512,12 @@ def analizar_pdf_inteligente(texto):
                 if valid_parts:
                     recoms_por_examen.append(f"{exam}: {' - '.join(valid_parts)}")
 
+    # CLAVE UNIFICADA EN ESPAÑOL DEFINITIVA
     datos["examenes_lista"] = examenes_detectados
     datos["recomendaciones_lista"] = recoms_por_examen
     datos["vigilancia_lista"] = list(pve_detectados)
 
-    # --- SOLUCIÓN DE VIGILANCIA: VALIDACIÓN CERRADA CONTRA DICCIONARIO CLÍNICO ---
+    # --- CORRECCIÓN INTEGRAL: EXTRACCIÓN ACOTA DE PROGRAMAS PVE ---
     programas_encontrados = []
     sve_clinical_keywords = {
         "VISUAL": "Conservación Visual", "AUDITIV": "Conservación Auditiva", 
@@ -589,25 +530,24 @@ def analizar_pdf_inteligente(texto):
         "HUMO": "Conservación Respiratoria", "CARDIOVASCULAR": "Riesgo Cardiovascular"
     }
 
-    # Bloque de captura estricta por palabras clave clínicas
-    m_bloque = re.search(r'(?:Ingresar al programa de vigilancia epidemiol[oó]gica|PROGRAMA DE VIGILANCIA)([\s\S]*?)(?:Remisiones:|Observaciones:|Otras Observaciones|Atentamente:|$)', texto, re.IGNORECASE)
-    if m_bloque:
-        texto_bloque = m_bloque.group(1).upper()
-        for kw, prog_name in sve_clinical_keywords.items():
-            if kw in texto_bloque and prog_name not in programas_encontrados:
-                programas_encontrados.append(prog_name)
-
-    for line in lineas_raw:
+    # Búsqueda vecinal: Solo lee las 2 líneas inmediatamente inferiores a la cabecera PVE
+    for idx, line in enumerate(lineas_raw):
         l_up = line.upper()
-        if any(h in l_up for h in ["INGRESAR", "SISTEMA DE VIGILANCIA", "VIGILANCIA EPIDEMIOL"]):
-            for kw, prog_name in sve_clinical_keywords.items():
-                if kw in l_up and prog_name not in programas_encontrados:
-                    programas_encontrados.append(prog_name)
+        if "INGRESAR AL PROGRAMA DE VIGILANCIA" in l_up or "PROGRAMA DE VIGILANCIA EPIDEMIOL" in l_up:
+            for offset in [0, 1, 2]:
+                if idx + offset < len(lineas_raw):
+                    text_target = lineas_raw[idx + offset].upper()
+                    # Freno de emergencia si cruza a la declaración de firmas/consentimientos legales
+                    if offset > 0 and any(stop in text_target for stop in ["REMISIONES:", "OBSERVACIONES:", "ATENTAMENTE", "CONSENTIMIENTO"]):
+                        break
+                    for kw, prog_name in sve_clinical_keywords.items():
+                        if kw in text_target and prog_name not in programas_encontrados:
+                            programas_encontrados.append(prog_name)
+            break
 
-    for pve_bandera in datos["vigilancia_lista"]:
-        if pve_bandera not in programas_encontrados:
-            programas_encontrados.append(pve_bandera)
-
+    if not programas_encontrados and pve_detectados:
+        programas_encontrados = [p.upper() for p in pve_detectados]
+        
     datos["vigilancia_programa"] = ", ".join(programas_encontrados) if programas_encontrados else "NINGUNO"
 
     def extraer_seccion_limpia(texto_completo, palabras_inicio, palabras_fin):
