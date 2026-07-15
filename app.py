@@ -127,10 +127,6 @@ st.markdown("""
         color: #e5e7eb !important;
     }
     
-    div[data-testid="stDrawers"] {
-         background-color: #111827 !important;
-    }
-    
     div[data-testid="stExpander"] {
         background-color: #111827 !important;
         border: 1px solid #1f2937 !important;
@@ -220,7 +216,7 @@ if "username" not in st.session_state:
     st.session_state.username = ""
 if "documentos" not in st.session_state:
     st.session_state.documentos = {}
-if "pdfs_raw_bytes" not in st.session_state:  # NUEVO: Guarda los bytes originales de los PDFs subidos
+if "pdfs_raw_bytes" not in st.session_state:
     st.session_state.pdfs_raw_bytes = {}
 if "textos_raw" not in st.session_state:
     st.session_state.textos_raw = {}
@@ -405,11 +401,10 @@ def analizar_pdf_inteligente(texto):
 
     lineas_raw = texto.split('\n')
 
-    # --- PRE-ESCÁNER DE GRILLAS COMPACTAS (NOMBRES, IDENTIFICACIÓN, FECHA, LUGAR Y CARGO) ---
+    # --- PRE-ESCÁNER DE GRILLAS COMPACTAS ---
     for idx, line in enumerate(lineas_raw):
         l_up = line.upper().strip()
         
-        # 1. Nombre completo en celdas de Grilla (Apellidos y Nombres)
         if "APELLIDOS Y NOMBRES" in l_up:
             if idx + 1 < len(lineas_raw):
                 l_val = lineas_raw[idx + 1].strip()
@@ -417,7 +412,6 @@ def analizar_pdf_inteligente(texto):
                 if cols and not any(h in cols[0].upper() for h in ["GÉNERO", "EDAD", "DOCUMENTO", "TIPO"]):
                     datos["nombre"] = cols[0].title()
 
-        # 2. Fecha Estructurada en Grilla y Municipio
         if "FECHA Y CIUDAD DE REALIZACIÓN" in l_up or "FECHA Y CIUDAD DE REALIZACION" in l_up:
             if idx + 1 < len(lineas_raw):
                 l_val = lineas_raw[idx + 1].strip()
@@ -436,7 +430,6 @@ def analizar_pdf_inteligente(texto):
                     if cols_fc and len(cols_fc[0]) > 2 and not cols_fc[0].upper() == "CIUDAD":
                         datos["lugar"] = re.sub(r'\(.*?\)', '', cols_fc[0]).strip().title()
 
-        # 3. MEJORA: Cargo Estructurado en Celda de Grilla
         if l_up == "CARGO":
             if idx + 1 < len(lineas_raw):
                 l_val = lineas_raw[idx + 1].strip()
@@ -444,7 +437,7 @@ def analizar_pdf_inteligente(texto):
                 if cols_c and not any(h in cols_c[0].upper() for h in ["EPS", "ARP", "AFP", "DATOS"]):
                     datos["cargo"] = corregir_ortografia_sst(cols_c[0].strip()).title()
 
-    # --- FALLBACKS: BUSCADORES BASADOS EN LOGICA LINEAL TRADICIONAL ---
+    # --- FALLBACKS LINEALES ---
     if not datos["lugar"] or datos["lugar"] == "Tunja":
         m_lugar = re.search(r'(?:Lugar|Ciudad|Municipio):\s*([A-Za-zñáéíóúÜÑ\s]+)', texto, re.IGNORECASE)
         if m_lugar: datos["lugar"] = re.sub(r'[:\-,_]+', '', m_lugar.group(1)).strip().title()
@@ -708,10 +701,7 @@ def replace_placeholder_in_paragraph_runs(paragraph, placeholder, value):
 
 def insert_bullets_in_placeholder(parent_container, paragraph, items_list):
     if not paragraph.runs:
-        font_name = "Arial"
-        font_size = Pt(11)
-        bold = False
-        color = None
+        font_name = "Arial"; font_size = Pt(11); bold = False; color = None
     else:
         first_run = paragraph.runs[0]
         font_name = first_run.font.name or "Arial"
@@ -863,6 +853,7 @@ def generar_word_unico(datos_trabajador, lugar, fecha, template_uploaded, firma_
             insert_bullets_in_placeholder(container, p, datos_trabajador["examenes_lista"])
             return True
         if "{{Recomendaciones médicas}}" in p.text:
+            # CORREGIDO: Clave unificada en español para evitar KeyError
             insert_recommendations_in_placeholder(container, p, datos_trabajador["recomendaciones_lista"])
             return True
         if "{{Observaciones}}".lower() in p.text.lower():
@@ -999,7 +990,7 @@ with col_izq:
         for pdf in pdfs_subidos:
             if pdf.name not in st.session_state.documentos:
                 pdf_raw_data = pdf.read()
-                st.session_state.pdfs_raw_bytes[pdf.name] = pdf_raw_data  # Almacenar bytes para visor comparativo
+                st.session_state.pdfs_raw_bytes[pdf.name] = pdf_raw_data
                 with pdfplumber.open(io.BytesIO(pdf_raw_data)) as p_file:
                     texto_raw = "".join([page.extract_text() + "\n" for page in p_file.pages])
                 st.session_state.documentos[pdf.name] = analizar_pdf_inteligente(texto_raw)
@@ -1013,7 +1004,6 @@ with col_izq:
         
         archivo_seleccionado = st.selectbox("🎯 Selecciona Colaborador:", list(st.session_state.documentos.keys()))
         
-        # --- MEJORA: VISOR E INSPECTOR INTERNO DEL PDF ORIGINAL SUBIDO ---
         if archivo_seleccionado and archivo_seleccionado in st.session_state.pdfs_raw_bytes:
             st.markdown("---")
             st.markdown("<h4 style='color:#60a5fa;'>📄 Soporte Visual de Comparación</h4>", unsafe_allow_html=True)
@@ -1058,7 +1048,9 @@ with col_der:
         with col_p2: cargo_persona = st.text_input("Cargo:", value=doc_actual["cargo"])
         
         examenes_realizados = st.text_area("Exámenes Realizados:", value="\n".join(doc_actual["examenes_lista"]))
-        recom_medicas = st.text_area("Recomendaciones por Examen:", value="\n".join(doc_actual["recommendaciones_lista"]), height=130)
+        
+        # CORREGIDO: Clave unificada en español para evitar KeyError al compilar
+        recom_medicas = st.text_area("Recomendaciones por Examen:", value="\n".join(doc_actual["recomendaciones_lista"]), height=130)
         
         programa_vigilancia = st.text_input("Programa de Vigilancia Epidemiológica (PVE):", value=doc_actual.get("vigilancia_programa", "NINGUNO"))
         
