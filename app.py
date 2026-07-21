@@ -11,6 +11,7 @@ import os
 import datetime
 import re
 import unicodedata
+
 try:
     import pytesseract
     from PIL import ImageEnhance, ImageFilter, ImageOps
@@ -21,6 +22,7 @@ except Exception:
     ImageFilter = None
     ImageOps = None
     OCR_DISPONIBLE = False
+
 import requests
 import io
 import zipfile
@@ -281,7 +283,7 @@ def es_vacio_o_estado(texto):
         "SANO Y SIN ALTERACIONES", "NINGUNO", "NINGUNA", "NO PRESENTAS", "NO PRESENTA", 
         "NO REGISTRA RECOMENDACIONES", "NORMALES", "NORMAL", "SIN ALTERACION", "NO APLICA",
         "RECOMENDACIONES MÉDICAS", "RECOMENDACIONES OCUPACIONALES", "HABITOS Y ESTILO DE VIDA SALUDABLES",
-        "OTRAS OBSERVACIONES Y RECOMENDACIONES", "RECOMENDACIONES MEDICAS"
+        "HABITOS SALUDABLES", "OTRAS OBSERVACIONES Y RECOMENDACIONES", "RECOMENDACIONES MEDICAS"
     }
     
     if t_clean_norm in frases_estado:
@@ -331,37 +333,7 @@ def intentar_parsear_fecha(fecha_str):
         
     return datetime.date.today()
 
-# --- CONFIGURACIÓN DE EXTRACCIÓN ROBUSTA ---
-_ETIQUETAS_CORTE = [
-    "APELLIDOS Y NOMBRES", "NOMBRES Y APELLIDOS", "NOMBRE DEL TRABAJADOR",
-    "NOMBRE TRABAJADOR", "NOMBRE COMPLETO", "TRABAJADOR", "PACIENTE",
-    "CARGO ACTUAL", "CARGO", "OCUPACIÓN", "OCUPACION", "OFICIO", "PUESTO",
-    "DOCUMENTO", "IDENTIFICACIÓN", "IDENTIFICACION", "CÉDULA", "CEDULA", "C.C.",
-    "CC", "GÉNERO", "GENERO", "EDAD", "TELÉFONO", "TELEFONO", "CELULAR",
-    "EPS", "AFP", "ARL", "EMPRESA", "NIT", "FECHA", "CIUDAD", "MUNICIPIO",
-    "LUGAR", "SEDE", "DIRECCIÓN", "DIRECCION"
-]
-
-_RUIDO_IDENTIDAD = {
-    "DATOS", "DATOS DEL TRABAJADOR", "INFORMACION DEL TRABAJADOR",
-    "INFORMACIÓN DEL TRABAJADOR", "APELLIDOS Y NOMBRES", "NOMBRES Y APELLIDOS",
-    "NOMBRE", "TRABAJADOR", "PACIENTE", "GENERO", "GÉNERO", "EDAD",
-    "DOCUMENTO", "IDENTIFICACION", "IDENTIFICACIÓN", "CEDULA", "CÉDULA",
-    "EMPRESA", "IPS", "EPS", "AFP", "ARL", "FIRMA", "CERTIFICADO"
-}
-
-_RUIDO_CARGO = {
-    "CARGO", "CARGO ACTUAL", "OCUPACION", "OCUPACIÓN", "OFICIO", "PUESTO",
-    "TRABAJADOR", "DATOS", "EMPRESA", "EPS", "AFP", "ARL", "GENERO", "GÉNERO",
-    "DOCUMENTO", "IDENTIFICACION", "IDENTIFICACIÓN", "CERTIFICADO"
-}
-
-_RUIDO_LUGAR = {
-    "LUGAR", "CIUDAD", "MUNICIPIO", "SEDE", "FECHA", "DIA", "DÍA", "MES",
-    "AÑO", "ANO", "REALIZACION", "REALIZACIÓN", "EXAMEN", "EXÁMEN",
-    "CERTIFICADO", "PAGINA", "PÁGINA", "LOGOTIPO", "AM", "PM"
-}
-
+# --- EXTRACCIÓN ROBUSTA DE IDENTIDAD, CARGO Y LUGAR ---
 def normalizar_etiqueta(texto):
     if not texto: return ""
     texto = unicodedata.normalize("NFKD", str(texto))
@@ -379,7 +351,7 @@ def recortar_en_siguiente_etiqueta(valor):
     if not valor: return ""
     patron = r"\b(?:" + "|".join(sorted((re.escape(e) for e in _ETIQUETAS_CORTE), key=len, reverse=True)) + r")\b"
     coincidencias = list(re.finditer(patron, valor, flags=re.IGNORECASE))
-    if  coincidencias:
+    if coincidencias:
         primera = coincidencias[0]
         if primera.start() > 0: valor = valor[:primera.start()]
     return valor.strip(" |/-,_.:")
@@ -506,11 +478,9 @@ def extraer_fecha_y_lugar_robusto(lineas, texto_completo):
     candidatos_lugar = []
     fechas = []
 
-    # REPARADO: Tuberías y espacios dinámicos controlados por cuantificador +
     patron_fecha_dmy = re.compile(r"\b(\d{1,2})\s*[\s|/\-.]+\s*(\d{1,2})\s*[\s|/\-.]+\s*(20\d{2})\b")
     patron_fecha_ymd = re.compile(r"\b(20\d{2})\s*[\s|/\-.]+\s*(\d{1,2})\s*[\s|/\-.]+\s*(\d{1,2})\b")
 
-    # Mapeo Matricial por Celdas Segmentadas
     for line in lineas:
         parts = [p.strip() for p in re.split(r'\|', line) if p.strip()]
         for i in range(len(parts) - 3):
@@ -699,7 +669,6 @@ def _agregar_candidato_especial(candidatos, tipo, puntaje, valor, origen):
     limpio = limpiar_candidato_campo(valor, tipo)
     if validadores[tipo](limpio): candidatos[tipo].append((puntaje, limpio, origen))
 
-# REPARADO: Mapeo de fila completa horizontal para evitar pérdidas por fusión de celdas
 def _buscar_valor_debajo(filas, fila_inicio, columna, tipo, max_filas=5):
     validadores = {"nombre": _nombre_muy_valido, "cargo": _cargo_muy_valido, "lugar": _lugar_muy_valido}
     validador = validadores[tipo]
@@ -840,7 +809,7 @@ def _extraer_de_filas_certificado(filas, candidatos, fechas, bonus=0, origen="ta
             if not celda: continue
 
             if _contiene_alguna_etiqueta(celda, _ETIQUETAS_NOMBRE_CERTIFICADO):
-                _agregar_candidato_especial(candidatos, "nombre", 430 + bonus, _extraer_value_inline(celda, _ETIQUETAS_NOMBRE_CERTIFICADO) if '_extraer_value_inline' in globals() else _extraer_valor_inline(celda, _ETIQUETAS_NOMBRE_CERTIFICADO), f"{origen}: nombre en misma celda")
+                _agregar_candidato_especial(candidatos, "nombre", 430 + bonus, _extraer_valor_inline(celda, _ETIQUETAS_NOMBRE_CERTIFICADO), f"{origen}: nombre en misma celda")
                 derecha, distancia = _buscar_valor_derecha(fila, columna, "nombre")
                 _agregar_candidato_especial(candidatos, "nombre", 420 - distancia + bonus, derecha, f"{origen}: nombre a la derecha")
                 debajo, salto = _buscar_valor_debajo(filas, fila_idx, columna, "nombre")
@@ -953,7 +922,7 @@ def extraer_texto_pdf_robusto(pdf_raw_data):
 
             for tabla in tablas:
                 for fila in tabla or []:
-                    celdas = [re.sub(r"\s+", " ", (c or "").replace("\n", " ")).strip() for c in fila or []]
+                    celdas = [re.sub(r"\s+", " ", (celda or "").replace("\n", " ")).strip() for celda in (fila or [])]
                     if any(celdas): agregar(" | ".join(celdas), permitir_repetido=True)
 
             texto_existente = page.extract_text(layout=False) or ""
@@ -963,6 +932,7 @@ def extraer_texto_pdf_robusto(pdf_raw_data):
 
     return "\n".join(lineas_salida)
 
+# --- ANALIZADOR INTELIGENTE MULTILÍNEA GENERALIZADO ---
 def analizar_pdf_inteligente(texto, metadatos_pdf=None):
     datos = {
         "nombre": "", "cargo": "", "tipo_examen": "PERIODICO",
@@ -971,6 +941,18 @@ def analizar_pdf_inteligente(texto, metadatos_pdf=None):
         "vigilancia_programa": "NINGUNO", "lugar": "Tunja", "fecha": datetime.date.today()
     }
     if not texto: return datos
+
+    # FIX DE GLOBAL SCOPE: Declaración primaria del catálogo clínico para evitar NameError
+    sve_clinical_keywords = {
+        "VISUAL": "Conservación Visual", "AUDITIV": "Conservación Auditiva", 
+        "RUIDO": "Conservación Auditiva", "OIDO": "Conservación Auditiva", "OÍDO": "Conservación Auditiva",
+        "AUDIO": "Conservación Auditiva", "OSTEOMUSCULAR": "Prevención Osteomuscular (DME)",
+        "POSTURAL": "Prevención Osteomuscular (DME)", "LUMBAR": "Prevención Osteomuscular (DME)",
+        "ERGONOMIC": "Prevención Osteomuscular (DME)", "ESPALDA": "Prevención Osteomuscular (DME)",
+        "DME": "Prevención Osteomuscular (DME)", "RESPIRATORI": "Conservación Respiratoria",
+        "ESPIROMETR": "Conservación Respiratoria", "POLVO": "Conservación Respiratoria",
+        "HUMO": "Conservación Respiratoria", "CARDIOVASCULAR": "Riesgo Cardiovascular"
+    }
 
     lineas_raw = texto.split("\n")
     identificacion = extraer_identidad_cargo_lugar(texto)
@@ -985,6 +967,11 @@ def analizar_pdf_inteligente(texto, metadatos_pdf=None):
     if metadatos_pdf.get("cargo"): datos["cargo"] = metadatos_pdf["cargo"]
     if metadatos_pdf.get("lugar"): datos["lugar"] = metadatos_pdf["lugar"]
     if metadatos_pdf.get("fecha"): datos["fecha"] = metadatos_pdf["fecha"]
+
+    for palabra in ["INGRESO", "PERIÓDICO", "PERIODICO", "EGRESO", "RETIRO", "CAMBIO DE CARGO", "POST-INCAPACIDAD", "POST INCAPACIDAD", "CONTROL PERIÓDICO"]:
+        if palabra in texto.upper():
+            datos["tipo_examen"] = "PERIODICO" if "PERIOD" in palabra or "CONTROL" in palabra else palabra
+            break
 
     EXAMS_MAP = {
         "AUDIOMETRIA DE TONOS": "Audiometría", "AUDIOMETRIA": "Audiometría",
@@ -1094,10 +1081,10 @@ def analizar_pdf_inteligente(texto, metadatos_pdf=None):
                 if valid_parts: recoms_por_examen.append(f"{exam}: {' - '.join(valid_parts)}")
 
     datos["examenes_lista"] = examenes_detectados
-    datos["recomendaciones_lista"] = filtrar_recomendaciones_clinicas(recoms_por_examen)
+    datos["recomendaciones_lista"] = filtrar_recommendaciones_clinicas(recoms_por_examen)
     datos["vigilancia_lista"] = list(pve_detectados)
 
-    # --- REPARADO: ACUMLACIÓN PRECISA DE PVE BASADO EN VECINDAD CERRADA ---
+    # Acumulación precisa vecinal de programas epidemiológicos
     programas_encontrados = []
     for idx, line in enumerate(lineas_raw):
         l_up = line.upper()
@@ -1145,31 +1132,7 @@ def analizar_pdf_inteligente(texto, metadatos_pdf=None):
     datos["remisiones"] = "No" if es_vacio_o_negativo(rem_raw) else a_caso_oracion(rem_raw)
     return datos
 
-def replace_placeholder_in_paragraph_runs(paragraph, placeholder, value):
-    if placeholder not in paragraph.text: return False
-    replaced = False
-    for run in paragraph.runs:
-        if placeholder in run.text:
-            run.text = run.text.replace(placeholder, value)
-            replaced = True
-            
-    if not replaced:
-        font_name, font_size, bold, italic, color = "Arial", Pt(11), False, False, None
-        if paragraph.runs:
-            for r in paragraph.runs:
-                if r.text.strip():
-                    font_name = r.font.name or font_name; font_size = r.font.size or font_size
-                    bold = r.bold if r.bold is not None else bold; italic = r.italic if r.italic is not None else italic
-                    color = r.font.color.rgb if r.font.color else color
-                    break
-        full_text = paragraph.text.replace(placeholder, value)
-        paragraph.text = ""
-        new_run = paragraph.add_run(full_text)
-        new_run.font.name = font_name; new_run.font.size = font_size; new_run.bold = bold; new_run.italic = italic
-        if color: new_run.font.color.rgb = color
-    return True
-
-# --- RESTO DEL CÓDIGO INMUTABLE DE PROCESAMIENTO ---
+# --- MOTOR DE RENDERIZADO Y CONTROL DE FUENTES WORD ---
 def insert_bullets_in_placeholder(parent_container, paragraph, items_list):
     if not paragraph.runs: font_name, font_size, bold, color = "Arial", Pt(11), False, None
     else:
@@ -1342,7 +1305,7 @@ def generar_html_vista(datos, consecutivo_num, lugar, fecha):
     </div>
     """
 
-# --- GESTIÓN DE ACCESOS Y RENDERIZADO INTERFAZ SST ---
+# --- GESTIÓN DE ACCESOS Y REGISTRO DE FORMULARIOS ---
 if not st.session_state.logged_in:
     st.markdown("<div class='login-box'>", unsafe_allow_html=True)
     st.markdown("<h2>🔑 Acceso Seguro</h2>", unsafe_allow_html=True)
@@ -1389,6 +1352,7 @@ if not st.session_state.logged_in:
                         else: st.error("❌ Error en los datos proporcionados.")
     st.markdown("</div>", unsafe_allow_html=True); st.stop()
 
+# --- VISTA PRINCIPAL DEL DASHBOARD ---
 col_izq, col_der = st.columns([1, 1.2])
 
 with col_izq:
@@ -1454,8 +1418,8 @@ with col_der:
 
         st.markdown("---")
         formato_salida = st.radio("⚡ Elige formato de generación:", ["Microsoft Word (.docx)", "Documento PDF Oficial (.pdf)", "Impresión de Respaldo Web (HTML)"], horizontal=True)
-        col_act1, col_gen2 = st.columns(2)
-        with col_act1:
+        col_f_act1, col_gen2 = st.columns(2)
+        with col_f_act1:
             if st.button("✨ Procesar este Colaborador"):
                 with st.spinner("Procesando y registrando documento..."):
                     bytes_word, consec_num = generar_word_unico(doc_actual, lugar, fecha, template_uploaded, firma_file)
