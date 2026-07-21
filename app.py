@@ -151,7 +151,13 @@ EXAMS_MAP = {
     "VSH": "VSH", "PCR": "PCR"
 }
 
-# --- CONFIGURACIÓN DE PÁGINA AVANZADA Y CSS ADAPTATIVO A PANTALLAS ANCHAS ---
+# --- CONFIGURACIÓN DE PÁGINA Y CSS ULTRA-RESPONSIVE ---
+st.set_page_config(
+    page_title="Portal SST - JER S.A.", 
+    page_icon="🩺", 
+    layout="wide"
+)
+
 st.markdown("""
     <style>
     html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
@@ -159,13 +165,22 @@ st.markdown("""
         color: #f8fafc !important;
     }
     
-    /* Layout expansivo para pantallas de alta resolución */
+    /* Ampliación de pantalla al 98% de ancho con padding equilibrado */
     .main .block-container {
         max-width: 98% !important;
         padding-top: 1.2rem !important;
-        padding-bottom: 2rem !important;
+        padding-bottom: 2.5rem !important;
         padding-left: 1.5rem !important;
         padding-right: 1.5rem !important;
+    }
+    
+    /* Diseño de Columnas como Tarjetas Independientes con sombra y bordes */
+    [data-testid="column"] {
+        background-color: #111827 !important;
+        padding: 1.8rem !important;
+        border-radius: 14px !important;
+        border: 1px solid #1f2937 !important;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3) !important;
     }
     
     .login-box {
@@ -185,11 +200,6 @@ st.markdown("""
         font-weight: 700;
         font-size: 1.8rem;
     }
-    .login-box p {
-        color: #9ca3af !important;
-        text-align: center;
-        font-size: 1rem;
-    }
     
     div[data-testid="stRadio"] label p {
         color: #f3f4f6 !important;
@@ -200,19 +210,20 @@ st.markdown("""
     div[data-testid="stWidgetLabel"] p {
         color: #60a5fa !important;
         font-weight: 700 !important;
-        font-size: 1.15rem !important;
+        font-size: 1.1rem !important;
+        margin-bottom: 4px !important;
     }
     
     div[data-baseweb="input"] {
         background-color: #1f2937 !important;
         border: 1px solid #374151 !important;
         border-radius: 8px !important;
+        min-height: 46px !important;
     }
     div[data-baseweb="input"] input {
         color: #ffffff !important;
         background-color: #1f2937 !important;
-        font-size: 1.1rem !important;
-        padding: 12px 14px !important;
+        font-size: 1.05rem !important;
     }
     div[data-testid="stTextArea"] textarea {
         color: #ffffff !important;
@@ -220,6 +231,7 @@ st.markdown("""
         border: 1px solid #374151 !important;
         border-radius: 8px !important;
         font-size: 1.05rem !important;
+        line-height: 1.5 !important;
     }
     
     button[data-baseweb="tab"] p {
@@ -284,12 +296,8 @@ st.markdown("""
         border-radius: 8px !important;
     }
     
-    /* Adaptación del Sidebar */
     [data-testid="stSidebar"] {
-        min-width: 330px !important;
-    }
-    [data-testid="stSidebar"] * {
-        font-size: 1.05rem !important;
+        min-width: 320px !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -1084,11 +1092,11 @@ def extraer_texto_pdf_robusto(pdf_raw_data):
 
     return "\n".join(lineas_salida)
 
-# --- DETECTOR ESPECÍFICO DE DATO PRIORITARIO ---
+# --- DETECTOR ESPECÍFICO DE DATO PRIORITARIO PARA CARGO ---
 def extraer_cargo_especifico(texto):
     if not texto: return ""
     
-    # 1. Búsqueda directa multilínea con separación por tabulación/múltiples espacios
+    # Expresión regular mejorada para capturar el cargo independientemente del espacio horizontal
     patrones_cargo = [
         r'(?i)\bCargo\b\s*[:=\t|-]*\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\s/.-]{2,60})',
         r'(?i)\bOcupaci[oó]n\b\s*[:=\t|-]*\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\s/.-]{2,60})',
@@ -1099,7 +1107,7 @@ def extraer_cargo_especifico(texto):
         m = re.search(p, texto)
         if m:
             candidato = m.group(1).strip()
-            # Cortar inmediatamente si se topa con otra etiqueta en la misma fila
+            # Freno de corte inmediato en palabras reservadas
             candidato = re.split(r'(?i)\b(?:EPS|ARL|AFP|Empresa|Escolaridad|Estado|Tipo|Tipo\s+de\s+Examen|Evaluaci[oó]n|Per[ií]odico|Identificaci[oó]n|Tel[eé]fono|C[eé]dula|Documento)\b', candidato)[0].strip()
             candidato = re.sub(r'\s+', ' ', candidato).strip(" :-,_./|")
             if candidato_cargo_valido(candidato):
@@ -1109,7 +1117,7 @@ def extraer_cargo_especifico(texto):
 def extraer_metadatos_formatos_conocidos(texto_completo):
     meta = {}
     
-    # Extraer cargo con motor especializado
+    # Prioridad 1: Extractor de Cargo Robusto
     cargo_directo = extraer_cargo_especifico(texto_completo)
     if cargo_directo:
         meta["cargo"] = cargo_directo
@@ -1635,7 +1643,8 @@ st.sidebar.subheader("📋 Documentación Base")
 template_uploaded = st.sidebar.file_uploader("Formato de Word Institucional (.docx)", type=["docx"])
 firma_file = st.sidebar.file_uploader("Estampa de Firma Autorizada (.png / .jpg)", type=["png", "jpg"])
 
-col_izq, col_der = st.columns([1, 1.2])
+# CONFIGURACIÓN DE COLUMNAS CON GAP GRANDE Y PROPORCIÓN BALANCEADA
+col_izq, col_der = st.columns([1, 1.15], gap="large")
 
 with col_izq:
     st.markdown("<h3 style='color:#60a5fa;'>📂 1. Carga de Documentos PDF</h3>", unsafe_allow_html=True)
@@ -1652,8 +1661,8 @@ with col_izq:
         
         st.markdown(f"""
             <div style='display:flex; gap:10px; margin-top:15px;'>
-                <div class='metric-card' style='flex:1;'><strong>PDFs Leídos</strong><br><span style='font-size:20px; font-weight:700; color:#60a5fa;'>{len(st.session_state.documentos)}</span></div>
-                <div class='metric-card' style='flex:1;'><strong>Nube Sheets</strong><br><span style='font-size:14px; font-weight:600; color:#4ade80;'>{'Conectado' if g_url_guardada else 'Modo Local'}</span></div>
+                <div class='metric-card' style='flex:1;'><strong>PDFs Leídos</strong><br><span style='font-size:22px; font-weight:700; color:#60a5fa;'>{len(st.session_state.documentos)}</span></div>
+                <div class='metric-card' style='flex:1;'><strong>Nube Sheets</strong><br><span style='font-size:15px; font-weight:600; color:#4ade80;'>{'Conectado' if g_url_guardada else 'Modo Local'}</span></div>
             </div>
         """, unsafe_allow_html=True)
         archivo_seleccionado = st.selectbox("🎯 Selecciona Colaborador:", list(st.session_state.documentos.keys()))
@@ -1682,10 +1691,10 @@ with col_der:
         col_p1, col_p2 = st.columns(2)
         with col_p1: nombre_persona = st.text_input("Trabajador:", value=doc_actual["nombre"])
         with col_p2: cargo_persona = st.text_input("Cargo:", value=doc_actual["cargo"])
-        examenes_realizados = st.text_area("Exámenes Realizados:", value="\n".join(doc_actual["examenes_lista"]))
-        recom_medicas = st.text_area("Recomendaciones por Examen:", value="\n".join(doc_actual["recomendaciones_lista"]), height=130)
+        examenes_realizados = st.text_area("Exámenes Realizados:", value="\n".join(doc_actual["examenes_lista"]), height=110)
+        recom_medicas = st.text_area("Recomendaciones por Examen:", value="\n".join(doc_actual["recomendaciones_lista"]), height=140)
         programa_vigilancia = st.text_input("Programa de Vigilancia Epidemiológica (PVE):", value=doc_actual.get("vigilancia_programa", "NINGUNO"))
-        observaciones = st.text_area("Observaciones:", value=doc_actual["observaciones"])
+        observaciones = st.text_area("Observaciones:", value=doc_actual["observaciones"], height=100)
         remisiones = st.text_input("Remisiones (Escribe 'No' para marcarlo negativo):", value=doc_actual["remisiones"])
 
         valores_actualizados = {
