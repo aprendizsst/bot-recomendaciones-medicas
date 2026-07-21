@@ -151,7 +151,7 @@ EXAMS_MAP = {
     "VSH": "VSH", "PCR": "PCR"
 }
 
-# --- CONFIGURACIÓN DE PÁGINA AVANZADA Y CSS ADAPTATIVO ---
+# --- CONFIGURACIÓN DE PÁGINA AVANZADA Y CSS ADAPTATIVO A PANTALLAS ANCHAS ---
 st.markdown("""
     <style>
     html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
@@ -159,18 +159,18 @@ st.markdown("""
         color: #f8fafc !important;
     }
     
-    /* Contenedor principal adaptativo para aprovechar toda la pantalla */
+    /* Layout expansivo para pantallas de alta resolución */
     .main .block-container {
-        max-width: 95% !important;
-        padding-top: 1.5rem !important;
+        max-width: 98% !important;
+        padding-top: 1.2rem !important;
         padding-bottom: 2rem !important;
-        padding-left: 2rem !important;
-        padding-right: 2rem !important;
+        padding-left: 1.5rem !important;
+        padding-right: 1.5rem !important;
     }
     
     .login-box {
-        max-width: 450px;
-        margin: 80px auto;
+        max-width: 480px;
+        margin: 60px auto;
         padding: 40px;
         background-color: #111827 !important;
         border-radius: 16px;
@@ -183,23 +183,24 @@ st.markdown("""
         text-align: center;
         margin-bottom: 5px;
         font-weight: 700;
+        font-size: 1.8rem;
     }
     .login-box p {
         color: #9ca3af !important;
         text-align: center;
-        font-size: 14px;
+        font-size: 1rem;
     }
     
     div[data-testid="stRadio"] label p {
         color: #f3f4f6 !important;
         font-weight: 600 !important;
-        font-size: 1rem !important;
+        font-size: 1.1rem !important;
     }
     
     div[data-testid="stWidgetLabel"] p {
         color: #60a5fa !important;
-        font-weight: 600 !important;
-        font-size: 1.05rem !important;
+        font-weight: 700 !important;
+        font-size: 1.15rem !important;
     }
     
     div[data-baseweb="input"] {
@@ -210,19 +211,20 @@ st.markdown("""
     div[data-baseweb="input"] input {
         color: #ffffff !important;
         background-color: #1f2937 !important;
-        font-size: 1rem !important;
-        padding: 10px 14px !important;
+        font-size: 1.1rem !important;
+        padding: 12px 14px !important;
     }
     div[data-testid="stTextArea"] textarea {
         color: #ffffff !important;
         background-color: #1f2937 !important;
         border: 1px solid #374151 !important;
         border-radius: 8px !important;
-        font-size: 1rem !important;
+        font-size: 1.05rem !important;
     }
     
     button[data-baseweb="tab"] p {
         color: #9ca3af !important;
+        font-size: 1.05rem !important;
     }
     button[data-baseweb="tab"][aria-selected="true"] p {
         color: #3b82f6 !important;
@@ -233,8 +235,8 @@ st.markdown("""
         background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
         color: #ffffff !important;
         border-radius: 8px !important;
-        padding: 14px 24px !important;
-        font-size: 1.05rem !important;
+        padding: 14px 28px !important;
+        font-size: 1.1rem !important;
         font-weight: 700 !important;
         border: none !important;
         transition: all 0.2s ease-in-out !important;
@@ -249,7 +251,7 @@ st.markdown("""
     
     .header-banner {
         background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%);
-        padding: 22px;
+        padding: 24px;
         border-radius: 12px;
         color: #ffffff !important;
         margin-bottom: 25px;
@@ -257,7 +259,12 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
     }
     .header-banner h1 {
-        font-size: 2.2rem !important;
+        font-size: 2.3rem !important;
+        margin-bottom: 6px !important;
+    }
+    .header-banner p {
+        font-size: 1.1rem !important;
+        margin: 0 !important;
     }
     
     .metric-card {
@@ -268,13 +275,21 @@ st.markdown("""
         border-left: 5px solid #2563eb;
         margin-bottom: 12px;
         color: #e5e7eb !important;
-        font-size: 1.05rem !important;
+        font-size: 1.1rem !important;
     }
     
     div[data-testid="stExpander"] {
         background-color: #111827 !important;
         border: 1px solid #1f2937 !important;
         border-radius: 8px !important;
+    }
+    
+    /* Adaptación del Sidebar */
+    [data-testid="stSidebar"] {
+        min-width: 330px !important;
+    }
+    [data-testid="stSidebar"] * {
+        font-size: 1.05rem !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -534,7 +549,6 @@ def candidato_cargo_valido(valor):
     if not valor or len(valor) < 3 or len(valor) > 120: return False
     norm = normalizar_etiqueta(valor)
     if norm in {normalizar_etiqueta(x) for x in _RUIDO_CARGO}: return False
-    # FILTRO MEJORADO PARA NO CONFUNDIR EL TIPO DE EXAMEN CON EL CARGO
     if any(ruido in norm for ruido in ["CERTIFICADO", "MÉDICO", "MEDICO", "FIRMA", "DOCUMENTO", "IDENTIFICACION", "GENERO", "TIPO DE EXAMEN", "TIPO DE EXÁMEN", "EVALUACION", "EVALUACIÓN", "PERIODICO", "PERIÓDICO"]): return False
     if re.fullmatch(r"[\d\s./-]+", valor): return False
     return sum(c.isalpha() for c in valor) >= 3
@@ -789,7 +803,7 @@ def _cargo_muy_valido(valor):
     limpio = limpiar_candidato_campo(valor, "cargo")
     if not candidato_cargo_valido(limpio): return False
     norm = normalizar_etiqueta(limpio)
-    prohibidas = ["FECHA", "REALIZACION", "EXAMEN", "DOCUMENTO", "IDENTIFICACION", "NOMBRES Y APELLIDOS", "APELLIDOS Y NOMBRES", "CERTIFICADO", "CONSENTIMIENTO", "DIA MES ANO", "TIPO DE EXAMEN", "TIPO DE EXAMEN", "EVALUACION", "PERIODICO", "PERIÓDICO"]
+    prohibidas = ["FECHA", "REALIZACION", "EXAMEN", "DOCUMENTO", "IDENTIFICACION", "NOMBRES Y APELLIDOS", "APELLIDOS Y NOMBRES", "CERTIFICADO", "CONSENTIMIENTO", "DIA MES ANO", "TIPO DE EXAMEN", "EVALUACION", "PERIODICO", "PERIÓDICO"]
     return not any(palabra in norm for palabra in prohibidas)
 
 def _lugar_muy_valido(valor):
@@ -1070,10 +1084,36 @@ def extraer_texto_pdf_robusto(pdf_raw_data):
 
     return "\n".join(lineas_salida)
 
-# --- DETECTOR DE FORMATOS ESPECÍFICOS Y BÚSQUEDA DE LÍMITES ---
+# --- DETECTOR ESPECÍFICO DE DATO PRIORITARIO ---
+def extraer_cargo_especifico(texto):
+    if not texto: return ""
+    
+    # 1. Búsqueda directa multilínea con separación por tabulación/múltiples espacios
+    patrones_cargo = [
+        r'(?i)\bCargo\b\s*[:=\t|-]*\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\s/.-]{2,60})',
+        r'(?i)\bOcupaci[oó]n\b\s*[:=\t|-]*\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\s/.-]{2,60})',
+        r'(?i)\bPuesto\b\s*[:=\t|-]*\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\s/.-]{2,60})'
+    ]
+    
+    for p in patrones_cargo:
+        m = re.search(p, texto)
+        if m:
+            candidato = m.group(1).strip()
+            # Cortar inmediatamente si se topa con otra etiqueta en la misma fila
+            candidato = re.split(r'(?i)\b(?:EPS|ARL|AFP|Empresa|Escolaridad|Estado|Tipo|Tipo\s+de\s+Examen|Evaluaci[oó]n|Per[ií]odico|Identificaci[oó]n|Tel[eé]fono|C[eé]dula|Documento)\b', candidato)[0].strip()
+            candidato = re.sub(r'\s+', ' ', candidato).strip(" :-,_./|")
+            if candidato_cargo_valido(candidato):
+                return corregir_ortografia_sst(candidato).title()
+    return ""
+
 def extraer_metadatos_formatos_conocidos(texto_completo):
     meta = {}
     
+    # Extraer cargo con motor especializado
+    cargo_directo = extraer_cargo_especifico(texto_completo)
+    if cargo_directo:
+        meta["cargo"] = cargo_directo
+
     # 1. FORMATO A: "Fecha y Lugar: 03 jun. 2026 - TUNJA - BOYACA" / "Paciente: MARIA..."
     m_fyl = re.search(r'Fecha\s+y\s+Lugar:\s*(\d{1,2}\s+[a-zA-Z]{3,4}\.?\s+20\d{2})\s*-\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s-]+)', texto_completo, re.IGNORECASE)
     if m_fyl:
@@ -1086,14 +1126,6 @@ def extraer_metadatos_formatos_conocidos(texto_completo):
         nc = m_pac.group(1).strip()
         if len(nc.split()) >= 2 and candidato_nombre_valido(nc):
             meta["nombre"] = nc.title()
-
-    # CORRECCIÓN EN EL CARGO: Detener inmediatamente antes de "Tipo de Examen", "EPS", "ARL", "AFP"
-    m_car = re.search(r'Cargo:\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s/-]+?)(?=\s+(?:EPS|ARL|AFP|Empresa|Escolaridad|Estado|Tipo|Tipo de Examen|Evaluaci[oó]n)|$)', texto_completo, re.IGNORECASE)
-    if m_car:
-        cc = m_car.group(1).strip()
-        cc = re.split(r'(?i)\b(?:Tipo|Tipo de Examen|Evaluaci[oó]n|Per[ií]odico)\b', cc)[0].strip()
-        if candidato_cargo_valido(cc):
-            meta["cargo"] = corregir_ortografia_sst(cc).title()
 
     # 2. FORMATO B: "Apellidos y Nombres" / Grillas
     if "nombre" not in meta:
@@ -1571,7 +1603,7 @@ if not st.session_state.logged_in:
                         else: st.error("❌ Error en los datos proporcionados.")
     st.markdown("</div>", unsafe_allow_html=True); st.stop()
 
-# --- BANNER PRINCIPAL ---
+# --- BANNER PRINCIPAL DE DASHBOARD ---
 st.markdown("<div class='header-banner'><h1>🩺 Portal de Control SST - JER S.A.</h1><p>Generación de Comunicaciones con Negrita Dinámica, Google Sheets y Firma Digital</p></div>", unsafe_allow_html=True)
 
 st.sidebar.markdown(f"<h3 style='color:#60a5fa;'>👤 Perfil Activo</h3>", unsafe_allow_html=True)
