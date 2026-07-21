@@ -31,7 +31,7 @@ import subprocess
 import base64
 
 # ==============================================================================
-# 1. CONSTANTES Y REGLAS DE CORTE GLOBALES (DEFINICIÓN EN ÁMBITO SUPERIOR)
+# 1. CONSTANTES Y DICCIONARIOS GLOBALES (ÁMBITO SUPERIOR)
 # ==============================================================================
 
 _ETIQUETAS_CORTE = [
@@ -148,7 +148,7 @@ EXAMS_MAP = {
     "VSH": "VSH", "PCR": "PCR"
 }
 
-# --- CONFIGURACIÓN Y BASE DE DATOS ---
+# --- BASE DE DATOS Y SEGURIDAD ---
 DB_NAME = "usuarios.db"
 
 def init_db():
@@ -222,7 +222,7 @@ def obtener_config(clave):
 
 init_db()
 
-# --- MANEJO DE SESIÓN DE LOGIN Y ESTADOS ---
+# --- ESTADOS Y SESIÓN DE STREAMLIT ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "username" not in st.session_state:
@@ -244,7 +244,7 @@ if "prev_colaborador" not in st.session_state:
 if "document_count" not in st.session_state:
     st.session_state.document_count = 0
 
-# --- FUNCIONES DE LIMPIEZA Y VALIDACIÓN ---
+# --- FUNCIONES DE LIMPIEZA DE TEXTO Y ORTOGRAFÍA ---
 def corregir_ortografia_sst(texto):
     if not texto: return ""
     diccionario_SST = {
@@ -311,26 +311,38 @@ def limpiar_ruido_columnas_final(texto):
     return texto.strip(" :-,_/")
 
 def intentar_parsear_fecha(fecha_str):
+    if not fecha_str: return datetime.date.today()
     fecha_str = fecha_str.lower().strip(" :-,_/.()[]|")
-    m_letras = re.search(r'(\d{1,2})\s+de\s+([a-zñáéíóúü]+)\s+de\s+(20\d{2})', fecha_str)
+    
+    meses_dict = {
+        "enero": 1, "ene": 1, "febrero": 2, "feb": 2, "marzo": 3, "mar": 3,
+        "abril": 4, "abr": 4, "mayo": 5, "may": 5, "junio": 6, "jun": 6,
+        "julio": 7, "jul": 7, "agosto": 8, "ago": 8, "septiembre": 9, "sep": 9, "sept": 9,
+        "octubre": 10, "oct": 10, "noviembre": 11, "nov": 11, "diciembre": 12, "dic": 12
+    }
+
+    m_letras = re.search(r'(\d{1,2})\s+(?:de\s+)?([a-z]{3,10})\.?\s+(?:de\s+)?(20\d{2})', fecha_str)
     if m_letras:
         dia = int(m_letras.group(1))
-        mes_str = m_letras.group(2)
+        mes_str = m_letras.group(2).lower()
         anio = int(m_letras.group(3))
-        meses = {
-            "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
-            "julio": 7, "agosto": 8, "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12
-        }
-        return datetime.date(anio, meses.get(mes_str, 1), dia)
-        
-    m_ymd = re.search(r'(20\d{2})[-/](\d{1,2})[-/](\d{1,2})', fecha_str)
-    if m_ymd: return datetime.date(int(m_ymd.group(1)), int(m_ymd.group(2)), int(m_ymd.group(3)))
-        
-    m_dmy = re.search(r'(\d{1,2})[-/](\d{1,2})[-/](20\d{2})', fecha_str)
-    if m_dmy: return datetime.date(int(m_dmy.group(3)), int(m_dmy.group(2)), int(m_dmy.group(1)))
-        
+        if mes_str in meses_dict:
+            try: return datetime.date(anio, meses_dict[mes_str], dia)
+            except ValueError: pass
+
+    m_ymd = re.search(r'\b(20\d{2})[-/.s](\d{1,2})[-/.s](\d{1,2})\b', fecha_str)
+    if m_ymd: 
+        try: return datetime.date(int(m_ymd.group(1)), int(m_ymd.group(2)), int(m_ymd.group(3)))
+        except ValueError: pass
+
+    m_dmy = re.search(r'\b(\d{1,2})[-/.s](\d{1,2})[-/.s](20\d{2})\b', fecha_str)
+    if m_dmy: 
+        try: return datetime.date(int(m_dmy.group(3)), int(m_dmy.group(2)), int(m_dmy.group(1)))
+        except ValueError: pass
+
     return datetime.date.today()
 
+# --- FUNCIONES DE FILTRADO DE METADATOS Y CANDIDATOS ---
 def normalizar_etiqueta(texto):
     if not texto: return ""
     texto = unicodedata.normalize("NFKD", str(texto))
@@ -479,6 +491,9 @@ def extraer_fecha_y_lugar_robusto(lineas, texto_completo):
     patron_fecha_ymd = re.compile(r"\b(20\d{2})\s*[\s|/\-.]+\s*(\d{1,2})\s*[\s|/\-.]+\s*(\d{1,2})\b")
 
     for line in lineas:
+        # IGNORAR EXPLICITAMENTE CUMPLEAÑOS / FECHA DE NACIMIENTO
+        if "NACIMIENTO" in line.upper() or "NACIDA" in line.upper(): continue
+
         parts = [p.strip() for p in re.split(r'\|', line) if p.strip()]
         for i in range(len(parts) - 2):
             if re.match(r'^\d{1,2}$', parts[i]) and re.match(r'^\d{1,2}$', parts[i+1]) and re.match(r'^20\d{2}$', parts[i+2]):
@@ -493,6 +508,7 @@ def extraer_fecha_y_lugar_robusto(lineas, texto_completo):
                 except ValueError: pass
 
     for idx, linea in enumerate(lineas):
+        if "NACIMIENTO" in linea.upper(): continue
         columnas = dividir_columnas_estructuradas(linea)
         columnas_norm = [normalizar_etiqueta(c) for c in columnas]
         ciudad_indices = [i for i, c in enumerate(columnas_norm) if any(k in c for k in ["CIUDAD", "MUNICIPIO", "LUGAR", "SEDE"])]
@@ -694,6 +710,7 @@ def _fecha_desde_componentes(dia, mes, anio):
 
 def _buscar_fecha_en_texto(texto):
     if not texto: return None
+    if "NACIMIENTO" in str(texto).upper(): return None
     texto = re.sub(r"\s+", " ", str(texto))
 
     patrones = [
@@ -718,6 +735,7 @@ def _buscar_fecha_tabla(filas, fila_inicio, columna_inicio=0):
     limite = min(len(filas), fila_inicio + 7)
     for indice in range(fila_inicio, limite):
         fila = filas[indice]
+        if "NACIMIENTO" in " ".join(celda for celda in fila if celda).upper(): continue
         texto_fila = " | ".join(celda for celda in fila if celda)
         fecha = _buscar_fecha_en_texto(texto_fila)
         if fecha: return fecha, 250 - (indice - fila_inicio)
@@ -811,7 +829,7 @@ def _extraer_de_filas_certificado(filas, candidatos, fechas, bonus=0, origen="ta
                 debajo, salto = _buscar_valor_debajo(filas, fila_idx, columna, "cargo")
                 _agregar_candidato_especial(candidatos, "cargo", 415 - salto + bonus, debajo, f"{origen}: cargo debajo")
 
-            if _contiene_alguna_etiqueta(celda, _ETIQUETAS_FECHA_CERTIFICADO):
+            if _contiene_alguna_etiqueta(celda, _ETIQUETAS_FECHA_CERTIFICADO) and "NACIMIENTO" not in str(celda).upper():
                 fecha_inline = _buscar_fecha_en_texto(celda)
                 if fecha_inline: fechas.append((440 + bonus, fecha_inline, f"{origen}: fecha misma celda"))
                 fecha_tabla, puntaje = _buscar_fecha_tabla(filas, fila_idx, columna)
@@ -921,7 +939,58 @@ def extraer_texto_pdf_robusto(pdf_raw_data):
 
     return "\n".join(lineas_salida)
 
-# --- ANALIZADOR INTELIGENTE MULTILÍNEA GENERALIZADO ---
+# --- DETECTOR ESPECÍFICO DE DATO PRIORITARIO ---
+def extraer_metadatos_formatos_conocidos(texto_completo):
+    meta = {}
+    
+    # 1. FORMATO A: "Fecha y Lugar: 03 jun. 2026 - TUNJA - BOYACA" / "Paciente: MARIA..."
+    m_fyl = re.search(r'Fecha\s+y\s+Lugar:\s*(\d{1,2}\s+[a-zA-Z]{3,4}\.?\s+20\d{2})\s*-\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s-]+)', texto_completo, re.IGNORECASE)
+    if m_fyl:
+        f_str, l_str = m_fyl.group(1).strip(), m_fyl.group(2).strip()
+        meta["lugar"] = re.split(r'-', l_str)[0].strip().title()
+        meta["fecha"] = intentar_parsear_fecha(f_str)
+        
+    m_pac = re.search(r'Paciente:\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s]+?)(?=\s+(?:Identificaci[oó]n|Tel[eé]fono|M[oó]vil|G[eé]nero|Edad|C\.?C|CC)|$)', texto_completo, re.IGNORECASE)
+    if m_pac:
+        nc = m_pac.group(1).strip()
+        if len(nc.split()) >= 2 and candidato_nombre_valido(nc):
+            meta["nombre"] = nc.title()
+
+    m_car = re.search(r'Cargo:\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s/-]+?)(?=\s+(?:EPS|ARL|AFP|Empresa|Escolaridad|Estado)|$)', texto_completo, re.IGNORECASE)
+    if m_car:
+        cc = m_car.group(1).strip()
+        if candidato_cargo_valido(cc):
+            meta["cargo"] = corregir_ortografia_sst(cc).title()
+
+    # 2. FORMATO B: "Apellidos y Nombres" / Grillas
+    if "nombre" not in meta:
+        m_nom_b = re.search(r'Apellidos\s+y\s+Nombres\s*[:\n|]?\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s]+?)(?=\s+(?:G[eé]nero|Edad|Documento|CC|C\.C)|$)', texto_completo, re.IGNORECASE)
+        if m_nom_b:
+            nc = m_nom_b.group(1).strip()
+            if len(nc.split()) >= 2 and candidato_nombre_valido(nc):
+                meta["nombre"] = nc.title()
+
+    if "cargo" not in meta:
+        lines = texto_completo.splitlines()
+        for idx, line in enumerate(lines):
+            if line.strip().upper() == "CARGO" and idx + 1 < len(lines):
+                next_l = lines[idx+1].strip()
+                col1 = re.split(r'\s{2,}|\|', next_l)[0].strip()
+                if candidato_cargo_valido(col1):
+                    meta["cargo"] = corregir_ortografia_sst(col1).title()
+                    break
+
+    if "fecha" not in meta or "lugar" not in meta:
+        m_grid_b = re.search(r'\b(\d{1,2})\s*[\s|/-]+\s*(\d{1,2})\s*[\s|/-]+\s*(20\d{2})\s*\|\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s]+?)(?=\(|\n|$)', texto_completo)
+        if m_grid_b:
+            d, m, y = int(m_grid_b.group(1)), int(m_grid_b.group(2)), int(m_grid_b.group(3))
+            lug = m_grid_b.group(4).strip()
+            if 1 <= d <= 31 and 1 <= m <= 12: meta["fecha"] = datetime.date(y, m, d)
+            if candidato_lugar_valido(lug): meta["lugar"] = lug.title()
+
+    return meta
+
+# --- ANALIZADOR INTELIGENTE DE DOCUMENTOS ---
 def analizar_pdf_inteligente(texto, metadatos_pdf=None):
     datos = {
         "nombre": "", "cargo": "", "tipo_examen": "PERIODICO",
@@ -931,25 +1000,28 @@ def analizar_pdf_inteligente(texto, metadatos_pdf=None):
     }
     if not texto: return datos
 
-    lineas_raw = texto.split("\n")
-    identificacion = extraer_identidad_cargo_lugar(texto)
+    # 1. Extracción de Alta Prioridad
+    meta_conocida = extraer_metadatos_formatos_conocidos(texto)
+    for k, v in meta_conocida.items():
+        if v: datos[k] = v
 
-    if identificacion.get("nombre"): datos["nombre"] = identificacion["nombre"]
-    if identificacion.get("cargo"): datos["cargo"] = identificacion["cargo"]
-    if identificacion.get("lugar"): datos["lugar"] = identificacion["lugar"]
-    if identificacion.get("fecha"): datos["fecha"] = identificacion["fecha"]
+    # 2. Respaldo por Extractor Matricial
+    identificacion = extraer_identidad_cargo_lugar(texto)
+    for k in ["nombre", "cargo", "lugar", "fecha"]:
+        if not datos[k] and identificacion.get(k):
+            datos[k] = identificacion[k]
 
     metadatos_pdf = metadatos_pdf or {}
-    if metadatos_pdf.get("nombre"): datos["nombre"] = metadatos_pdf["nombre"]
-    if metadatos_pdf.get("cargo"): datos["cargo"] = metadatos_pdf["cargo"]
-    if metadatos_pdf.get("lugar"): datos["lugar"] = metadatos_pdf["lugar"]
-    if metadatos_pdf.get("fecha"): datos["fecha"] = metadatos_pdf["fecha"]
+    for k in ["nombre", "cargo", "lugar", "fecha"]:
+        if not datos[k] and metadatos_pdf.get(k):
+            datos[k] = metadatos_pdf[k]
 
     for palabra in ["INGRESO", "PERIÓDICO", "PERIODICO", "EGRESO", "RETIRO", "CAMBIO DE CARGO", "POST-INCAPACIDAD", "POST INCAPACIDAD", "CONTROL PERIÓDICO"]:
         if palabra in texto.upper():
             datos["tipo_examen"] = "PERIODICO" if "PERIOD" in palabra or "CONTROL" in palabra else palabra
             break
 
+    lineas_raw = texto.split("\n")
     examenes_detectados = []
     recoms_raw_dict = {}
     current_exam = None
@@ -1048,7 +1120,7 @@ def analizar_pdf_inteligente(texto, metadatos_pdf=None):
     datos["recomendaciones_lista"] = filtrar_recomendaciones_clinicas(recoms_por_examen)
     datos["vigilancia_lista"] = list(pve_detectados)
 
-    # Acumulación precisa vecinal de programas epidemiológicos
+    # RECOLECCIÓN VECINAL ESTRICTA DE PVE (MAX 3 LÍNEAS DEBAJO DE LA CABECERA)
     programas_encontrados = []
     for idx, line in enumerate(lineas_raw):
         l_up = line.upper()
@@ -1096,7 +1168,7 @@ def analizar_pdf_inteligente(texto, metadatos_pdf=None):
     datos["remisiones"] = "No" if es_vacio_o_negativo(rem_raw) else a_caso_oracion(rem_raw)
     return datos
 
-# --- MOTOR DE RENDERIZADO Y CONTROL DE FUENTES WORD ---
+# --- MOTOR DE RENDERIZADO WORD ---
 def aplicar_negrita_dinamica_cuerpo(paragraph, tipo_examen):
     texto_parrafo = paragraph.text
     if "Según los lineamientos del programa de medicina preventiva" not in texto_parrafo:
@@ -1319,7 +1391,7 @@ def generar_html_vista(datos, consecutivo_num, lugar, fecha):
     </div>
     """
 
-# --- GESTIÓN DE ACCESOS Y AUTENTICACIÓN ---
+# --- PANTALLAS DE ACCESO INTERNO (BLINDADAS) ---
 if not st.session_state.logged_in:
     st.markdown("<div class='login-box'>", unsafe_allow_html=True)
     st.markdown("<h2>🔑 Acceso Seguro</h2>", unsafe_allow_html=True)
@@ -1366,7 +1438,7 @@ if not st.session_state.logged_in:
                         else: st.error("❌ Error en los datos proporcionados.")
     st.markdown("</div>", unsafe_allow_html=True); st.stop()
 
-# --- HEADER PRINCIPAL DE DASHBOARD ---
+# --- HEADER PRINCIPAL REESTABLECIDO DE DASHBOARD ---
 st.markdown("<div class='header-banner'><h1>🩺 Portal de Control SST - JER S.A.</h1><p>Generación de Comunicaciones con Negrita Dinámica, Google Sheets y Firma Digital</p></div>", unsafe_allow_html=True)
 
 st.sidebar.markdown(f"<h3 style='color:#60a5fa;'>👤 Perfil Activo</h3>", unsafe_allow_html=True)
