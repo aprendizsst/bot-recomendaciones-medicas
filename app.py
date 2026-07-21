@@ -30,125 +30,125 @@ import tempfile
 import subprocess
 import base64
 
-# --- CONFIGURACIÓN DE PÁGINA AVANZADA ---
-st.set_page_config(
-    page_title="Portal SST - JER S.A.", 
-    page_icon="🩺", 
-    layout="wide"
-)
+# ==============================================================================
+# 1. CONSTANTES Y REGLAS DE CORTE GLOBALES (DEFINICIÓN EN ÁMBITO SUPERIOR)
+# ==============================================================================
 
-# --- INYECCIÓN DE CSS: MODO OSCURO PREMIUM ---
-st.markdown("""
-    <style>
-    html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"], [data-testid="stHeader"] {
-        background-color: #0b0f19 !important;
-        color: #f8fafc !important;
-    }
-    
-    .login-box {
-        max-width: 450px;
-        margin: 80px auto;
-        padding: 40px;
-        background-color: #111827 !important;
-        border-radius: 16px;
-        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
-        border: 1px solid #1f2937;
-    }
-    
-    .login-box h2 {
-        color: #3b82f6 !important;
-        text-align: center;
-        margin-bottom: 5px;
-        font-weight: 700;
-    }
-    .login-box p {
-        color: #9ca3af !important;
-        text-align: center;
-        font-size: 14px;
-    }
-    
-    div[data-testid="stRadio"] label p {
-        color: #f3f4f6 !important;
-        font-weight: 600 !important;
-        font-size: 14px !important;
-    }
-    
-    div[data-testid="stWidgetLabel"] p {
-        color: #60a5fa !important;
-        font-weight: 600 !important;
-        font-size: 15px !important;
-    }
-    
-    div[data-baseweb="input"] {
-        background-color: #1f2937 !important;
-        border: 1px solid #374151 !important;
-        border-radius: 8px !important;
-    }
-    div[data-baseweb="input"] input {
-        color: #ffffff !important;
-        background-color: #1f2937 !important;
-    }
-    div[data-testid="stTextArea"] textarea {
-        color: #ffffff !important;
-        background-color: #1f2937 !important;
-        border: 1px solid #374151 !important;
-        border-radius: 8px !important;
-    }
-    
-    button[data-baseweb="tab"] p {
-        color: #9ca3af !important;
-    }
-    button[data-baseweb="tab"][aria-selected="true"] p {
-        color: #3b82f6 !important;
-        font-weight: 700 !important;
-    }
-    
-    .stButton>button {
-        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
-        color: #ffffff !important;
-        border-radius: 8px !important;
-        padding: 12px 24px !important;
-        font-weight: 700 !important;
-        border: none !important;
-        transition: all 0.2s ease-in-out !important;
-        box-shadow: 0 4px 14px rgba(37, 99, 235, 0.3) !important;
-        width: 100%;
-    }
-    .stButton>button:hover {
-        transform: translateY(-1px) !important;
-        box-shadow: 0 6px 20px rgba(37, 99, 235, 0.5) !important;
-        filter: brightness(115%);
-    }
-    
-    .header-banner {
-        background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%);
-        padding: 22px;
-        border-radius: 12px;
-        color: #ffffff !important;
-        margin-bottom: 25px;
-        border: 1px solid #1e2937;
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
-    }
-    
-    .metric-card {
-        background-color: #111827 !important;
-        padding: 15px;
-        border-radius: 10px;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.2);
-        border-left: 5px solid #2563eb;
-        margin-bottom: 12px;
-        color: #e5e7eb !important;
-    }
-    
-    div[data-testid="stExpander"] {
-        background-color: #111827 !important;
-        border: 1px solid #1f2937 !important;
-        border-radius: 8px !important;
-    }
-    </style>
-""", unsafe_allow_html=True)
+_ETIQUETAS_CORTE = [
+    "APELLIDOS Y NOMBRES", "NOMBRES Y APELLIDOS", "NOMBRE DEL TRABAJADOR",
+    "NOMBRE TRABAJADOR", "NOMBRE COMPLETO", "TRABAJADOR", "PACIENTE",
+    "CARGO ACTUAL", "CARGO", "OCUPACIÓN", "OCUPACION", "OFICIO", "PUESTO",
+    "DOCUMENTO", "IDENTIFICACIÓN", "IDENTIFICACION", "CÉDULA", "CEDULA", "C.C.",
+    "CC", "GÉNERO", "GENERO", "EDAD", "TELÉFONO", "TELEFONO", "CELULAR",
+    "EPS", "AFP", "ARL", "EMPRESA", "NIT", "FECHA", "CIUDAD", "MUNICIPIO",
+    "LUGAR", "SEDE", "DIRECCIÓN", "DIRECCION"
+]
 
-# --- SISTEMA DE SEGURIDAD (BASE DE DATOS) ---
+_RUIDO_IDENTIDAD = {
+    "DATOS", "DATOS DEL TRABAJADOR", "INFORMACION DEL TRABAJADOR",
+    "INFORMACIÓN DEL TRABAJADOR", "APELLIDOS Y NOMBRES", "NOMBRES Y APELLIDOS",
+    "NOMBRE", "TRABAJADOR", "PACIENTE", "GENERO", "GÉNERO", "EDAD",
+    "DOCUMENTO", "IDENTIFICACION", "IDENTIFICACIÓN", "CEDULA", "CÉDULA",
+    "EMPRESA", "IPS", "EPS", "AFP", "ARL", "FIRMA", "CERTIFICADO"
+}
+
+_RUIDO_CARGO = {
+    "CARGO", "CARGO ACTUAL", "OCUPACION", "OCUPACIÓN", "OFICIO", "PUESTO",
+    "TRABAJADOR", "DATOS", "EMPRESA", "EPS", "AFP", "ARL", "GENERO", "GÉNERO",
+    "DOCUMENTO", "IDENTIFICACION", "IDENTIFICACIÓN", "CERTIFICADO"
+}
+
+_RUIDO_LUGAR = {
+    "LUGAR", "CIUDAD", "MUNICIPIO", "SEDE", "FECHA", "DIA", "DÍA", "MES",
+    "AÑO", "ANO", "REALIZACION", "REALIZACIÓN", "EXAMEN", "EXÁMEN",
+    "CERTIFICADO", "PAGINA", "PÁGINA", "LOGOTIPO", "AM", "PM", "HORA"
+}
+
+_ETIQUETAS_NOMBRE_CERTIFICADO = [
+    "NOMBRES Y APELLIDOS TRABAJADOR", "NOMBRES Y APELLIDOS DEL TRABAJADOR", 
+    "APELLIDOS Y NOMBRES TRABAJADOR", "APELLIDOS Y NOMBRES DEL TRABAJADOR", 
+    "NOMBRES Y APELLIDOS", "APELLIDOS Y NOMBRES", "NOMBRE DEL TRABAJADOR", 
+    "NOMBRE COMPLETO", "PACIENTE"
+]
+
+_ETIQUETAS_CARGO_CERTIFICADO = [
+    "CARGO DEL TRABAJADOR", "CARGO ACTUAL DEL TRABAJADOR", "CARGO ACTUAL", 
+    "CARGO U OCUPACIÓN", "CARGO U OCUPACION", "OCUPACIÓN DEL TRABAJADOR", 
+    "OCUPACION DEL TRABAJADOR", "PUESTO DE TRABAJO", "OCUPACIÓN", "OCUPACION", 
+    "OFICIO", "LABOR", "CARGO"
+]
+
+_ETIQUETAS_FECHA_CERTIFICADO = [
+    "FECHA DE REALIZACIÓN DEL EXAMEN", "FECHA DE REALIZACION DEL EXAMEN", 
+    "FECHA DE REALIZACIÓN DE LOS EXÁMENES", "FECHA DE REALIZACION DE LOS EXAMENES", 
+    "FECHA DEL EXAMEN", "FECHA EXAMEN", "FECHA DE ATENCIÓN", "FECHA DE ATENCION"
+]
+
+_ETIQUETAS_LUGAR_CERTIFICADO = [
+    "FECHA Y CIUDAD DE REALIZACIÓN", "FECHA Y CIUDAD DE REALIZACION", 
+    "CIUDAD DE REALIZACIÓN DEL EXAMEN", "CIUDAD DE REALIZACION DEL EXAMEN", 
+    "LUGAR DE REALIZACIÓN DEL EXAMEN", "LUGAR DE REALIZACION DEL EXAMEN", 
+    "LUGAR DE REALIZACIÓN DE LOS EXÁMENES", "LUGAR DE REALIZACION DE LOS EXAMENES", 
+    "LUGAR DONDE SE REALIZARON LOS EXÁMENES", "LUGAR DONDE SE REALIZARON LOS EXAMENES", 
+    "MUNICIPIO DE REALIZACIÓN", "MUNICIPIO DE REALIZACION", "CIUDAD DEL EXAMEN", 
+    "MUNICIPIO DEL EXAMEN", "LUGAR DEL EXAMEN", "SEDE DE ATENCIÓN", "SEDE DE ATENCION", 
+    "CIUDAD", "MUNICIPIO", "LUGAR", "SEDE"
+]
+
+_ETIQUETAS_IPS_CERTIFICADO = [
+    "IPS QUE REALIZA EL EXAMEN", "IPS PRESTADORA", "CENTRO MÉDICO", 
+    "CENTRO MEDICO", "INSTITUCIÓN PRESTADORA", "INSTITUCION PRESTADORA"
+]
+
+_PATRONES_LEGALES_RECOMENDACIONES = [
+    r"\bconsentimiento(?:\s+informado)?\b", r"\bautorizo\b", 
+    r"\bautorización\s+para\s+el\s+tratamiento\s+de\s+datos\b", 
+    r"\bautorizacion\s+para\s+el\s+tratamiento\s+de\s+datos\b", 
+    r"\btratamiento\s+de\s+datos(?:\s+personales)?\b", r"\bprotección\s+de\s+datos\b", 
+    r"\bproteccion\s+de\s+datos\b", r"\bhabeas\s+data\b", r"\bley\s+1581\b", 
+    r"\bdeclaro\b", r"\bmanifiesto\b", r"\bhe\s+sido\s+informad[oa]\b", 
+    r"\bacepto\s+(?:el|la|los|las)\b", r"\bconstancia\b", r"\briesgos\s+y\s+beneficios\b", 
+    r"\bfirma\s+(?:del|de\s+la)\s+(?:trabajador|paciente|usuario|evaluado)\b", 
+    r"\bfirma\s+del\s+m[eé]dico\b", r"\bhuella\b", r"\bdocumento\s+de\s+identidad\b", 
+    r"\bresponsabilidad\s+del\s+paciente\b", r"\bdeclaración\s+del\s+paciente\b", 
+    r"\bdeclaracion\s+del\s+paciente\b", r"\bderechos\s+y\s+deberes\b", 
+    r"\binformación\s+suministrada\s+es\s+verdadera\b", r"\binformacion\s+suministrada\s+es\s+verdadera\b"
+]
+
+_ENCABEZADOS_LEGALES = [
+    "CONSENTIMIENTO INFORMADO", "CONSENTIMIENTO", "AUTORIZACIÓN PARA TRATAMIENTO DE DATOS", 
+    "AUTORIZACION PARA TRATAMIENTO DE DATOS", "TRATAMIENTO DE DATOS PERSONALES", 
+    "DECLARACIÓN DEL PACIENTE", "DECLARACION DEL PACIENTE", "AUTORIZO", "CONSTANCIA", 
+    "FIRMA DEL TRABAJADOR", "FIRMA DEL PACIENTE", "FIRMA DEL USUARIO", "HUELLA", "HABEAS DATA"
+]
+
+SVE_CLINICAL_KEYWORDS = {
+    "VISUAL": "Conservación Visual", "AUDITIV": "Conservación Auditiva", 
+    "RUIDO": "Conservación Auditiva", "OIDO": "Conservación Auditiva", "OÍDO": "Conservación Auditiva",
+    "AUDIO": "Conservación Auditiva", "OSTEOMUSCULAR": "Prevención Osteomuscular (DME)",
+    "POSTURAL": "Prevención Osteomuscular (DME)", "LUMBAR": "Prevención Osteomuscular (DME)",
+    "ERGONOMIC": "Prevención Osteomuscular (DME)", "ESPALDA": "Prevención Osteomuscular (DME)",
+    "DME": "Prevención Osteomuscular (DME)", "RESPIRATORI": "Conservación Respiratoria",
+    "ESPIROMETR": "Conservación Respiratoria", "POLVO": "Conservación Respiratoria",
+    "HUMO": "Conservación Respiratoria", "CARDIOVASCULAR": "Riesgo Cardiovascular"
+}
+
+EXAMS_MAP = {
+    "AUDIOMETRIA DE TONOS": "Audiometría", "AUDIOMETRIA": "Audiometría",
+    "ESPIROMETRIA": "Espirometría", "ESPIROMETRÍA": "Espirometría",
+    "OPTOMETRIA": "Optometría", "OPTOMETRÍA": "Optometría",
+    "VISIOMETRIA": "Visiometría", "VISIOMETRÍA": "Visiometría",
+    "EXAMEN MEDICO OCUPACIONAL": "Examen Clínico Ocupacional", 
+    "EXAMEN MEDICO": "Examen Clínico Ocupacional",
+    "EXAMEN OCUPACIONAL ENFASIS OSTEOMUSCULAR": "Énfasis Osteomuscular",
+    "ENFASIS OSTEOMUSCULAR": "Énfasis Osteomuscular", "ÉNFASIS OSTEOMUSCULAR": "Énfasis Osteomuscular",
+    "ELECTROCARDIOGRAMA DE RITMO": "Electrocardiograma", "ELECTROCARDIOGRAMA": "Electrocardiograma", 
+    "FROTIS": "Frotis", "CUADRO HEMATICO": "Cuadro Hemático", "CUADRO HEMÁTICO": "Cuadro Hemático",
+    "COLESTEROL": "Colesterol", "TRIGLICERIDOS": "Triglicéridos", "PARCIAL DE ORINA": "Parcial de Orina",
+    "VSH": "VSH", "PCR": "PCR"
+}
+
+# --- CONFIGURACIÓN Y BASE DE DATOS ---
 DB_NAME = "usuarios.db"
 
 def init_db():
@@ -222,7 +222,7 @@ def obtener_config(clave):
 
 init_db()
 
-# --- MANEJO DE SESIÓN DE LOGIN Y ESTADOS DE ARCHIVOS ---
+# --- MANEJO DE SESIÓN DE LOGIN Y ESTADOS ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "username" not in st.session_state:
@@ -244,7 +244,7 @@ if "prev_colaborador" not in st.session_state:
 if "document_count" not in st.session_state:
     st.session_state.document_count = 0
 
-# --- REVISOR Y CORRECTOR DE ORTOGRAFÍA SST ---
+# --- FUNCIONES DE LIMPIEZA Y VALIDACIÓN ---
 def corregir_ortografia_sst(texto):
     if not texto: return ""
     diccionario_SST = {
@@ -286,10 +286,8 @@ def es_vacio_o_estado(texto):
         "HABITOS SALUDABLES", "OTRAS OBSERVACIONES Y RECOMENDACIONES", "RECOMENDACIONES MEDICAS"
     }
     
-    if t_clean_norm in frases_estado:
-        return True
-    if len(texto.strip()) <= 3:
-        return True
+    if t_clean_norm in frases_estado: return True
+    if len(texto.strip()) <= 3: return True
     return False
 
 def limpiar_campo(texto):
@@ -333,7 +331,6 @@ def intentar_parsear_fecha(fecha_str):
         
     return datetime.date.today()
 
-# --- EXTRACCIÓN ROBUSTA DE IDENTIDAD, CARGO Y LUGAR ---
 def normalizar_etiqueta(texto):
     if not texto: return ""
     texto = unicodedata.normalize("NFKD", str(texto))
@@ -483,7 +480,7 @@ def extraer_fecha_y_lugar_robusto(lineas, texto_completo):
 
     for line in lineas:
         parts = [p.strip() for p in re.split(r'\|', line) if p.strip()]
-        for i in range(len(parts) - 3):
+        for i in range(len(parts) - 2):
             if re.match(r'^\d{1,2}$', parts[i]) and re.match(r'^\d{1,2}$', parts[i+1]) and re.match(r'^20\d{2}$', parts[i+2]):
                 try:
                     d, m, y = int(parts[i]), int(parts[i+1]), int(parts[i+2])
@@ -527,7 +524,8 @@ def extraer_fecha_y_lugar_robusto(lineas, texto_completo):
             antes, despues = linea[:m_fecha.start()].strip(" |/-,_.:"), linea[m_fecha.end():].strip(" |/-,_.:")
             contexto = normalizar_etiqueta(linea)
             puntaje = 118 if any(k in contexto for k in ["REALIZACION", "CIUDAD", "MUNICIPIO", "LUGAR", "SEDE"]) else 78
-            if despues: candidatos_lugar.append((puntaje, despues, "después de fecha"))
+            if despues and not any(m in despues.upper() for m in ["PÁGINA", "PAGINA", "CERTIFICADO", "P.M.", "A.M."]):
+                candidatos_lugar.append((puntaje, despues, "después de fecha"))
             if antes and len(antes.split()) <= 7:
                 antes = re.sub(r"(?i)\b(FECHA|CIUDAD|MUNICIPIO|LUGAR|REALIZACI[ÓO]N|DEL EXAMEN|DEL EXÁMEN)\b", "", antes).strip(" |/-,_.:")
                 if antes: candidatos_lugar.append((puntaje - 5, antes, "antes de fecha"))
@@ -558,15 +556,6 @@ def extraer_identidad_cargo_lugar(texto):
     fecha, lugar = extraer_fecha_y_lugar_robusto(lineas, texto)
 
     return {"nombre": nombre, "cargo": cargo, "fecha": fecha, "lugar": lugar}
-
-# --- CONFIGURACIÓN DE FORMATO DE CERTIFICADO ---
-_ETIQUETAS_NOMBRE_CERTIFICADO = ["NOMBRES Y APELLIDOS TRABAJADOR", "NOMBRES Y APELLIDOS DEL TRABAJADOR", "APELLIDOS Y NOMBRES TRABAJADOR", "APELLIDOS Y NOMBRES DEL TRABAJADOR", "NOMBRES Y APELLIDOS", "APELLIDOS Y NOMBRES", "NOMBRE DEL TRABAJADOR", "NOMBRE COMPLETO", "PACIENTE"]
-_ETIQUETAS_CARGO_CERTIFICADO = ["CARGO DEL TRABAJADOR", "CARGO ACTUAL DEL TRABAJADOR", "CARGO ACTUAL", "CARGO U OCUPACIÓN", "CARGO U OCUPACION", "OCUPACIÓN DEL TRABAJADOR", "OCUPACION DEL TRABAJADOR", "PUESTO DE TRABAJO", "OCUPACIÓN", "OCUPACION", "OFICIO", "LABOR", "CARGO"]
-_ETIQUETAS_FECHA_CERTIFICADO = ["FECHA DE REALIZACIÓN DEL EXAMEN", "FECHA DE REALIZACION DEL EXAMEN", "FECHA DE REALIZACIÓN DE LOS EXÁMENES", "FECHA DE REALIZACION DE LOS EXAMENES", "FECHA DEL EXAMEN", "FECHA EXAMEN", "FECHA DE ATENCIÓN", "FECHA DE ATENCION"]
-_ETIQUETAS_LUGAR_CERTIFICADO = ["FECHA Y CIUDAD DE REALIZACIÓN", "FECHA Y CIUDAD DE REALIZACION", "CIUDAD DE REALIZACIÓN DEL EXAMEN", "CIUDAD DE REALIZACION DEL EXAMEN", "LUGAR DE REALIZACIÓN DEL EXAMEN", "LUGAR DE REALIZACION DEL EXAMEN", "LUGAR DE REALIZACIÓN DE LOS EXÁMENES", "LUGAR DE REALIZACION DE LOS EXAMENES", "LUGAR DONDE SE REALIZARON LOS EXÁMENES", "LUGAR DONDE SE REALIZARON LOS EXAMENES", "MUNICIPIO DE REALIZACIÓN", "MUNICIPIO DE REALIZACION", "CIUDAD DEL EXAMEN", "MUNICIPIO DEL EXAMEN", "LUGAR DEL EXAMEN", "SEDE DE ATENCIÓN", "SEDE DE ATENCION", "CIUDAD", "MUNICIPIO", "LUGAR", "SEDE"]
-_ETIQUETAS_IPS_CERTIFICADO = ["IPS QUE REALIZA EL EXAMEN", "IPS PRESTADORA", "CENTRO MÉDICO", "CENTRO MEDICO", "INSTITUCIÓN PRESTADORA", "INSTITUCION PRESTADORA"]
-_PATRONES_LEGALES_RECOMENDACIONES = [r"\bconsentimiento(?:\s+informado)?\b", r"\bautorizo\b", r"\bautorización\s+para\s+el\s+tratamiento\s+de\s+datos\b", r"\bautorizacion\s+para\s+el\s+tratamiento\s+de\s+datos\b", r"\btratamiento\s+de\s+datos(?:\s+personales)?\b", r"\bprotección\s+de\s+datos\b", r"\bproteccion\s+de\s+datos\b", r"\bhabeas\s+data\b", r"\bley\s+1581\b", r"\bdeclaro\b", r"\bmanifiesto\b", r"\bhe\s+sido\s+informad[oa]\b", r"\bacepto\s+(?:el|la|los|las)\b", r"\bconstancia\b", r"\briesgos\s+y\s+beneficios\b", r"\bfirma\s+(?:del|de\s+la)\s+(?:trabajador|paciente|usuario|evaluado)\b", r"\bfirma\s+del\s+m[eé]dico\b", r"\bhuella\b", r"\bdocumento\s+de\s+identidad\b", r"\bresponsabilidad\s+del\s+paciente\b", r"\bdeclaración\s+del\s+paciente\b", r"\bdeclaracion\s+del\s+paciente\b", r"\bderechos\s+y\s+deberes\b", r"\binformación\s+suministrada\s+es\s+verdadera\b", r"\binformacion\s+suministrada\s+es\s+verdadera\b"]
-_ENCABEZADOS_LEGALES = ["CONSENTIMIENTO INFORMADO", "CONSENTIMIENTO", "AUTORIZACIÓN PARA TRATAMIENTO DE DATOS", "AUTORIZACION PARA TRATAMIENTO DE DATOS", "TRATAMIENTO DE DATOS PERSONALES", "DECLARACIÓN DEL PACIENTE", "DECLARACION DEL PACIENTE", "AUTORIZO", "CONSTANCIA", "FIRMA DEL TRABAJADOR", "FIRMA DEL PACIENTE", "FIRMA DEL USUARIO", "HUELLA", "HABEAS DATA"]
 
 def es_contenido_legal_recomendacion(texto):
     if not texto: return False
@@ -853,14 +842,14 @@ def extraer_metadatos_pdf_estructurados(pdf_raw_data, texto_completo=""):
     fechas = []
 
     try: documento = pdfplumber.open(io.BytesIO(pdf_raw_data))
-    except: documento = None
+    except Exception: documento = None
 
     if documento is not None:
         with documento as p_file:
             for numero_pagina, page in enumerate(p_file.pages, start=1):
                 bonus = max(0, 35 - (numero_pagina - 1) * 8)
                 try: tablas = page.extract_tables() or []
-                except: tablas = []
+                except Exception: tablas = []
 
                 for tabla in tablas:
                     filas = [_normalizar_lista_celdas(fila) for fila in (tabla or [])]
@@ -918,7 +907,7 @@ def extraer_texto_pdf_robusto(pdf_raw_data):
             for linea in _extraer_lineas_por_coordenadas(page): agregar(linea)
 
             try: tablas = page.extract_tables() or []
-            except: tablas = []
+            except Exception: tablas = []
 
             for tabla in tablas:
                 for fila in tabla or []:
@@ -942,18 +931,6 @@ def analizar_pdf_inteligente(texto, metadatos_pdf=None):
     }
     if not texto: return datos
 
-    # FIX DE GLOBAL SCOPE: Declaración primaria del catálogo clínico para evitar NameError
-    sve_clinical_keywords = {
-        "VISUAL": "Conservación Visual", "AUDITIV": "Conservación Auditiva", 
-        "RUIDO": "Conservación Auditiva", "OIDO": "Conservación Auditiva", "OÍDO": "Conservación Auditiva",
-        "AUDIO": "Conservación Auditiva", "OSTEOMUSCULAR": "Prevención Osteomuscular (DME)",
-        "POSTURAL": "Prevención Osteomuscular (DME)", "LUMBAR": "Prevención Osteomuscular (DME)",
-        "ERGONOMIC": "Prevención Osteomuscular (DME)", "ESPALDA": "Prevención Osteomuscular (DME)",
-        "DME": "Prevención Osteomuscular (DME)", "RESPIRATORI": "Conservación Respiratoria",
-        "ESPIROMETR": "Conservación Respiratoria", "POLVO": "Conservación Respiratoria",
-        "HUMO": "Conservación Respiratoria", "CARDIOVASCULAR": "Riesgo Cardiovascular"
-    }
-
     lineas_raw = texto.split("\n")
     identificacion = extraer_identidad_cargo_lugar(texto)
 
@@ -972,19 +949,6 @@ def analizar_pdf_inteligente(texto, metadatos_pdf=None):
         if palabra in texto.upper():
             datos["tipo_examen"] = "PERIODICO" if "PERIOD" in palabra or "CONTROL" in palabra else palabra
             break
-
-    EXAMS_MAP = {
-        "AUDIOMETRIA DE TONOS": "Audiometría", "AUDIOMETRIA": "Audiometría",
-        "ESPIROMETRIA": "Espirometría", "ESPIROMETRÍA": "Espirometría",
-        "OPTOMETRIA": "Optometría", "OPTOMETRÍA": "Optometría",
-        "VISIOMETRIA": "Visiometría", "VISIOMETRÍA": "Visiometría",
-        "EXAMEN MEDICO OCUPACIONAL": "Examen Clínico Ocupacional", "EXAMEN MEDICO": "Examen Clínico Ocupacional",
-        "EXAMEN OCUPACIONAL ENFASIS OSTEOMUSCULAR": "Énfasis Osteomuscular",
-        "ENFASIS OSTEOMUSCULAR": "Énfasis Osteomuscular", "ÉNFASIS OSTEOMUSCULAR": "Énfasis Osteomuscular",
-        "ELECTROCARDIOGRAMA DE RITMO": "Electrocardiograma", "ELECTROCARDIOGRAMA": "Electrocardiograma", 
-        "FROTIS": "Frotis", "CUADRO HEMATICO": "Cuadro Hemático", "CUADRO HEMÁTICO": "Cuadro Hemático",
-        "COLESTEROL": "Colesterol", "TRIGLICERIDOS": "Triglicéridos", "PARCIAL DE ORINA": "Parcial de Orina"
-    }
 
     examenes_detectados = []
     recoms_raw_dict = {}
@@ -1081,7 +1045,7 @@ def analizar_pdf_inteligente(texto, metadatos_pdf=None):
                 if valid_parts: recoms_por_examen.append(f"{exam}: {' - '.join(valid_parts)}")
 
     datos["examenes_lista"] = examenes_detectados
-    datos["recomendaciones_lista"] = filtrar_recommendaciones_clinicas(recoms_por_examen)
+    datos["recomendaciones_lista"] = filtrar_recomendaciones_clinicas(recoms_por_examen)
     datos["vigilancia_lista"] = list(pve_detectados)
 
     # Acumulación precisa vecinal de programas epidemiológicos
@@ -1093,7 +1057,7 @@ def analizar_pdf_inteligente(texto, metadatos_pdf=None):
                 if idx + offset < len(lineas_raw):
                     text_target = lineas_raw[idx + offset].upper()
                     if offset > 0 and any(stop in text_target for stop in ["REMISIONES:", "OBSERVACIONES:", "ATENTAMENTE", "CONSENTIMIENTO", "AUTORIZO"]): break
-                    for kw, prog_name in sve_clinical_keywords.items():
+                    for kw, prog_name in SVE_CLINICAL_KEYWORDS.items():
                         if kw in text_target and prog_name not in programas_encontrados: programas_encontrados.append(prog_name)
             break
 
@@ -1133,6 +1097,56 @@ def analizar_pdf_inteligente(texto, metadatos_pdf=None):
     return datos
 
 # --- MOTOR DE RENDERIZADO Y CONTROL DE FUENTES WORD ---
+def aplicar_negrita_dinamica_cuerpo(paragraph, tipo_examen):
+    texto_parrafo = paragraph.text
+    if "Según los lineamientos del programa de medicina preventiva" not in texto_parrafo:
+        return
+        
+    paragraph.text = "" 
+    p1 = "Según los lineamientos del programa de medicina preventiva y del trabajo de JER S.A; se hace entrega de las recomendaciones establecidas por el Proveedor de servicios de Exámenes Médico Ocupacionales ("
+    paragraph.add_run(p1)
+    
+    opciones = [
+        ("Ingreso", "INGRESO" in tipo_examen.upper()),
+        ("Periódico", "PERIODIC" in tipo_examen.upper() or "PERIÓDIC" in tipo_examen.upper()),
+        ("egreso", "EGRESO" in tipo_examen.upper() or "RETIRO" in tipo_examen.upper()),
+        ("cambio de cargo", "CAMBIO" in tipo_examen.upper()),
+        ("post incapacidad", "POST" in tipo_examen.upper() or "INCAPACIDAD" in tipo_examen.upper())
+    ]
+    
+    for i, (texto_opcion, condicion) in enumerate(opciones):
+        run = paragraph.add_run(texto_opcion)
+        run.bold = condicion 
+        if i < len(opciones) - 1:
+            if i == len(opciones) - 2: paragraph.add_run(" y ")
+            else: paragraph.add_run(", ")
+                
+    paragraph.add_run(")")
+
+def replace_placeholder_in_paragraph_runs(paragraph, placeholder, value):
+    if placeholder not in paragraph.text: return False
+    replaced = False
+    for run in paragraph.runs:
+        if placeholder in run.text:
+            run.text = run.text.replace(placeholder, value)
+            replaced = True
+            
+    if not replaced:
+        font_name, font_size, bold, italic, color = "Arial", Pt(11), False, False, None
+        if paragraph.runs:
+            for r in paragraph.runs:
+                if r.text.strip():
+                    font_name = r.font.name or font_name; font_size = r.font.size or font_size
+                    bold = r.bold if r.bold is not None else bold; italic = r.italic if r.italic is not None else italic
+                    color = r.font.color.rgb if r.font.color else color
+                    break
+        full_text = paragraph.text.replace(placeholder, value)
+        paragraph.text = ""
+        new_run = paragraph.add_run(full_text)
+        new_run.font.name = font_name; new_run.font.size = font_size; new_run.bold = bold; new_run.italic = italic
+        if color: new_run.font.color.rgb = color
+    return True
+
 def insert_bullets_in_placeholder(parent_container, paragraph, items_list):
     if not paragraph.runs: font_name, font_size, bold, color = "Arial", Pt(11), False, None
     else:
@@ -1305,7 +1319,7 @@ def generar_html_vista(datos, consecutivo_num, lugar, fecha):
     </div>
     """
 
-# --- GESTIÓN DE ACCESOS Y REGISTRO DE FORMULARIOS ---
+# --- GESTIÓN DE ACCESOS Y AUTENTICACIÓN ---
 if not st.session_state.logged_in:
     st.markdown("<div class='login-box'>", unsafe_allow_html=True)
     st.markdown("<h2>🔑 Acceso Seguro</h2>", unsafe_allow_html=True)
@@ -1352,7 +1366,38 @@ if not st.session_state.logged_in:
                         else: st.error("❌ Error en los datos proporcionados.")
     st.markdown("</div>", unsafe_allow_html=True); st.stop()
 
-# --- VISTA PRINCIPAL DEL DASHBOARD ---
+# --- HEADER PRINCIPAL DE DASHBOARD ---
+st.markdown("<div class='header-banner'><h1>🩺 Portal de Control SST - JER S.A.</h1><p>Generación de Comunicaciones con Negrita Dinámica, Google Sheets y Firma Digital</p></div>", unsafe_allow_html=True)
+
+st.sidebar.markdown(f"<h3 style='color:#60a5fa;'>👤 Perfil Activo</h3>", unsafe_allow_html=True)
+st.sidebar.markdown(f"<div class='metric-card'><strong>Usuario:</strong> {st.session_state.username}</div>", unsafe_allow_html=True)
+if st.sidebar.button("Cerrar Sesión"):
+    st.session_state.logged_in = False
+    st.session_state.username = ""
+    st.session_state.documentos = {}
+    st.session_state.pdfs_raw_bytes = {}
+    st.session_state.textos_raw = {}
+    st.session_state.export_bytes = None
+    st.session_state.zip_bytes = None
+    st.session_state.processed_doc = None
+    st.session_state.prev_colaborador = None
+    st.session_state.document_count = 0
+    st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🔗 Configuración de Nube Sheets")
+g_url_guardada = obtener_config("google_sheets_url")
+g_url_input = st.sidebar.text_input("URL de Google Apps Script:", value=g_url_guardada, type="password")
+if st.sidebar.button("Guardar Conexión"):
+    guardar_config("google_sheets_url", g_url_input)
+    st.sidebar.success("¡Enlace guardado!")
+    st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("📋 Documentación Base")
+template_uploaded = st.sidebar.file_uploader("Formato de Word Institucional (.docx)", type=["docx"])
+firma_file = st.sidebar.file_uploader("Estampa de Firma Autorizada (.png / .jpg)", type=["png", "jpg"])
+
 col_izq, col_der = st.columns([1, 1.2])
 
 with col_izq:
@@ -1418,8 +1463,8 @@ with col_der:
 
         st.markdown("---")
         formato_salida = st.radio("⚡ Elige formato de generación:", ["Microsoft Word (.docx)", "Documento PDF Oficial (.pdf)", "Impresión de Respaldo Web (HTML)"], horizontal=True)
-        col_f_act1, col_gen2 = st.columns(2)
-        with col_f_act1:
+        col_act1, col_gen2 = st.columns(2)
+        with col_act1:
             if st.button("✨ Procesar este Colaborador"):
                 with st.spinner("Procesando y registrando documento..."):
                     bytes_word, consec_num = generar_word_unico(doc_actual, lugar, fecha, template_uploaded, firma_file)
